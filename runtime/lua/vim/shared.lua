@@ -4,7 +4,7 @@
 -- test-suite. If, in the future, Nvim itself is used to run the test-suite
 -- instead of "vanilla Lua", these functions could move to src/nvim/lua/vim.lua
 
-local vim = {}
+local vim = vim or {}
 
 --- Returns a deep copy of the given object. Non-table objects are copied as
 --- in a typical Lua assignment, whereas table objects are copied recursively.
@@ -228,16 +228,24 @@ end
 
 --- Extends a list-like table with the values of another list-like table.
 ---
---NOTE: This *mutates* dst!
---@see |extend()|
+--- NOTE: This mutates dst!
 ---
---@param dst The list which will be modified and appended to.
---@param src The list from which values will be inserted.
-function vim.list_extend(dst, src)
-  assert(type(dst) == 'table', "dst must be a table")
-  assert(type(src) == 'table', "src must be a table")
-  for _, v in ipairs(src) do
-    table.insert(dst, v)
+--@see |vim.tbl_extend()|
+---
+--@param dst list which will be modified and appended to.
+--@param src list from which values will be inserted.
+--@param start Start index on src. defaults to 1
+--@param finish Final index on src. defaults to #src
+--@returns dst
+function vim.list_extend(dst, src, start, finish)
+  vim.validate {
+    dst = {dst, 't'};
+    src = {src, 't'};
+    start = {start, 'n', true};
+    finish = {finish, 'n', true};
+  }
+  for i = start or 1, finish or #src do
+    table.insert(dst, src[i])
   end
   return dst
 end
@@ -310,6 +318,26 @@ end
 function vim.pesc(s)
   vim.validate{s={s,'s'}}
   return s:gsub('[%(%)%.%%%+%-%*%?%[%]%^%$]', '%%%1')
+end
+
+--- Test if `prefix` is a prefix of `s` for strings.
+--
+-- @param s String to check
+-- @param prefix Potential prefix
+-- @return boolean True if prefix is a prefix of s
+function vim.startswith(s, prefix)
+  vim.validate { s = {s, 's'}; prefix = {prefix, 's'}; }
+  return s:sub(1, #prefix) == prefix
+end
+
+--- Test if `suffix` is a suffix of `s` for strings.
+--
+-- @param s String to check
+-- @param suffix Potential suffix
+-- @return boolean True if suffix is a suffix of s
+function vim.endswith(s, suffix)
+  vim.validate { s = {s, 's'}; suffix = {suffix, 's'}; }
+  return #suffix == 0 or s:sub(-#suffix) == suffix
 end
 
 --- Validates a parameter specification (types and values).
