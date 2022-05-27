@@ -1,3 +1,4 @@
+" Test for the gf and gF (goto file) commands
 
 " This is a test if a URL is recognized by "gf", with the cursor before and
 " after the "://".  Also test ":\\".
@@ -18,11 +19,7 @@ func Test_gf_url()
   call search("^second")
   call search("URL")
   call assert_equal("URL://machine.name/tmp/vimtest2b", expand("<cfile>"))
-  if has("ebcdic")
-      set isf=@,240-249,/,.,-,_,+,,,$,:,~,\
-  else
-      set isf=@,48-57,/,.,-,_,+,,,$,~,\
-  endif
+  set isf=@,48-57,/,.,-,_,+,,,$,~,\
   call search("^third")
   call search("name")
   call assert_equal("URL:\\\\machine.name\\vimtest2c", expand("<cfile>"))
@@ -58,6 +55,14 @@ func Test_gF()
   call assert_equal('Xfile', bufname('%'))
   call assert_equal(3, getcurpos()[1])
 
+  enew!
+  call setline(1, ['one', 'the Xfile line 2, and more', 'three'])
+  w! Xfile2
+  normal 2GfX
+  normal gF
+  call assert_equal('Xfile', bufname('%'))
+  call assert_equal(2, getcurpos()[1])
+
   set isfname&
   call delete('Xfile')
   call delete('Xfile2')
@@ -67,11 +72,7 @@ endfunc
 
 " Test for invoking 'gf' on a ${VAR} variable
 func Test_gf()
-  if has("ebcdic")
-    set isfname=@,240-249,/,.,-,_,+,,,$,:,~,{,}
-  else
-    set isfname=@,48-57,/,.,-,_,+,,,$,:,~,{,}
-  endif
+  set isfname=@,48-57,/,.,-,_,+,,,$,:,~,{,}
 
   call writefile(["Test for gf command"], "Xtest1")
   if has("unix")
@@ -101,7 +102,7 @@ func Test_gf()
 endfunc
 
 func Test_gf_visual()
-  call writefile([], "Xtest_gf_visual")
+  call writefile(['one', 'two', 'three', 'four'], "Xtest_gf_visual")
   new
   call setline(1, 'XXXtest_gf_visualXXX')
   set hidden
@@ -110,9 +111,33 @@ func Test_gf_visual()
   norm! ttvtXgf
   call assert_equal('Xtest_gf_visual', bufname('%'))
 
+  " if multiple lines are selected, then gf should fail
+  call setline(1, ["one", "two"])
+  normal VGgf
+  call assert_equal('Xtest_gf_visual', @%)
+
+  " following line number is used for gF
+  bwipe!
+  new
+  call setline(1, 'XXXtest_gf_visual:3XXX')
+  norm! 0ttvt:gF
+  call assert_equal('Xtest_gf_visual', bufname('%'))
+  call assert_equal(3, getcurpos()[1])
+
+  " line number in visual area is used for file name
+  if has('unix')
+    bwipe!
+    call writefile([], "Xtest_gf_visual:3")
+    new
+    call setline(1, 'XXXtest_gf_visual:3XXX')
+    norm! 0ttvtXgF
+    call assert_equal('Xtest_gf_visual:3', bufname('%'))
+  call delete('Xtest_gf_visual:3')
+  endif
+
   bwipe!
   call delete('Xtest_gf_visual')
-  set hidden&
+  set nohidden
 endfunc
 
 func Test_gf_error()

@@ -1,5 +1,3 @@
-include(CMakeParseArguments)
-
 # BuildMsgpack(CONFIGURE_COMMAND ... BUILD_COMMAND ... INSTALL_COMMAND ...)
 # Reusable function to build msgpack, wraps ExternalProject_Add.
 # Failing to pass a command argument will result in no command being run
@@ -33,7 +31,6 @@ function(BuildMsgpack)
 endfunction()
 
 set(MSGPACK_CONFIGURE_COMMAND ${CMAKE_COMMAND} ${DEPS_BUILD_DIR}/src/msgpack
-  -DMSGPACK_ENABLE_CXX=OFF
   -DMSGPACK_BUILD_TESTS=OFF
   -DMSGPACK_BUILD_EXAMPLES=OFF
   -DCMAKE_INSTALL_PREFIX=${DEPS_INSTALL_DIR}
@@ -48,7 +45,6 @@ set(MSGPACK_INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install --config
 if(MINGW AND CMAKE_CROSSCOMPILING)
   get_filename_component(TOOLCHAIN ${CMAKE_TOOLCHAIN_FILE} REALPATH)
   set(MSGPACK_CONFIGURE_COMMAND ${CMAKE_COMMAND} ${DEPS_BUILD_DIR}/src/msgpack
-    -DMSGPACK_ENABLE_CXX=OFF
     -DMSGPACK_BUILD_TESTS=OFF
     -DMSGPACK_BUILD_EXAMPLES=OFF
     -DCMAKE_INSTALL_PREFIX=${DEPS_INSTALL_DIR}
@@ -60,15 +56,15 @@ if(MINGW AND CMAKE_CROSSCOMPILING)
 elseif(MSVC)
   # Same as Unix without fPIC
   set(MSGPACK_CONFIGURE_COMMAND ${CMAKE_COMMAND} ${DEPS_BUILD_DIR}/src/msgpack
-    -DMSGPACK_ENABLE_CXX=OFF
     -DMSGPACK_BUILD_TESTS=OFF
     -DMSGPACK_BUILD_EXAMPLES=OFF
     -DCMAKE_INSTALL_PREFIX=${DEPS_INSTALL_DIR}
     -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    -DCMAKE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
     "-DCMAKE_C_FLAGS:STRING=${CMAKE_C_COMPILER_ARG1}"
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
     # Make sure we use the same generator, otherwise we may
-    # accidentaly end up using different MSVC runtimes
+    # accidentally end up using different MSVC runtimes
     -DCMAKE_GENERATOR=${CMAKE_GENERATOR})
 endif()
 

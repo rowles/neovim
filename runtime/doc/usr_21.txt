@@ -339,21 +339,6 @@ window, move the cursor to the filename and press "O".  Double clicking with
 the mouse will also do this.
 
 
-UNIX AND MS-WINDOWS
-
-Some people have to do work on MS-Windows systems one day and on Unix another
-day.  If you are one of them, consider adding "slash" and "unix" to
-'sessionoptions'.  The session files will then be written in a format that can
-be used on both systems.  This is the command to put in your |init.vim| file:
->
-	:set sessionoptions+=unix,slash
-
-Vim will use the Unix format then, because the MS-Windows Vim can read and
-write Unix files, but Unix Vim can't read MS-Windows format session files.
-Similarly, MS-Windows Vim understands file names with / to separate names, but
-Unix Vim doesn't understand \.
-
-
 SESSIONS AND SHADA
 
 Sessions store many things, but not the position of marks, contents of
@@ -367,12 +352,12 @@ another session.
 this yourself then.  Example: >
 
 	:mksession! ~/.config/nvim/secret.vim
-	:wshada! ~/.local/share/nvim/shada/secret.shada
+	:wshada! ~/.local/state/nvim/shada/secret.shada
 
 And to restore this again: >
 
 	:source ~/.config/nvim/secret.vim
-	:rshada! ~/.local/share/nvim/shada/secret.shada
+	:rshada! ~/.local/state/nvim/shada/secret.shada
 
 ==============================================================================
 *21.5*	Views

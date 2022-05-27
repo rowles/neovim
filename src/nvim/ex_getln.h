@@ -7,7 +7,7 @@
 #include "nvim/os/time.h"
 #include "nvim/regexp_defs.h"
 
-/* Values for nextwild() and ExpandOne().  See ExpandOne() for meaning. */
+// Values for nextwild() and ExpandOne().  See ExpandOne() for meaning.
 #define WILD_FREE               1
 #define WILD_EXPAND_FREE        2
 #define WILD_EXPAND_KEEP        3
@@ -16,6 +16,8 @@
 #define WILD_ALL                6
 #define WILD_LONGEST            7
 #define WILD_ALL_KEEP           8
+#define WILD_CANCEL             9
+#define WILD_APPLY              10
 
 #define WILD_LIST_NOTFOUND      0x01
 #define WILD_HOME_REPLACE       0x02
@@ -29,6 +31,8 @@
 #define WILD_ALLLINKS           0x200
 #define WILD_IGNORE_COMPLETESLASH   0x400
 #define WILD_NOERROR            0x800  // sets EW_NOERROR
+#define WILD_BUFLASTUSED        0x1000
+#define BUF_DIFF_FILTER         0x2000
 
 /// Present history tables
 typedef enum {
@@ -44,7 +48,7 @@ typedef enum {
 /// Number of history tables
 #define HIST_COUNT      (HIST_DEBUG + 1)
 
-typedef char_u *(*CompleteListItemGetter)(expand_T *, int);
+typedef char *(*CompleteListItemGetter)(expand_T *, int);
 
 /// History entry definition
 typedef struct hist_entry {

@@ -2,8 +2,8 @@
 #   intro: https://codingnest.com/basic-cmake/
 #   best practices (3.0+): https://gist.github.com/mbinna/c61dbb39bca0e4fb7d1f73b0d66a4fd1
 
-# Version should match the tested CMAKE_URL in .travis.yml.
-cmake_minimum_required(VERSION 2.8.12)
+# Version should match the tested CMAKE_URL in .github/workflows/ci.yml.
+cmake_minimum_required(VERSION 3.10)
 project(nvim C)
 
 if(POLICY CMP0065)
@@ -11,6 +11,9 @@ if(POLICY CMP0065)
 endif()
 if(POLICY CMP0060)
   cmake_policy(SET CMP0060 NEW)
+endif()
+if(POLICY CMP0075)
+  cmake_policy(SET CMP0075 NEW)
 endif()
 
 # Point CMake at any custom modules we may ship
@@ -23,9 +26,23 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Prefer our bundled versions of dependencies.
 if(DEFINED ENV{DEPS_BUILD_DIR})
-  set(DEPS_PREFIX "$ENV{DEPS_BUILD_DIR}/usr" CACHE PATH "Path prefix for finding dependencies")
+  if(CMAKE_SYSTEM_NAME MATCHES "OpenBSD")
+    # pkg-config 29.2 has a bug on OpenBSD which causes it to drop any paths that
+    # *contain* system include paths. To avoid this, we prefix what would be
+    # "/usr/include" as "/_usr/include".
+    # This check is also performed in the third-party/CMakeLists.txt and in the
+    # else clause following here.
+    # https://github.com/neovim/neovim/pull/14745#issuecomment-860201794
+    set(DEPS_PREFIX "$ENV{DEPS_BUILD_DIR}/_usr" CACHE PATH "Path prefix for finding dependencies")
+  else()
+    set(DEPS_PREFIX "$ENV{DEPS_BUILD_DIR}/usr" CACHE PATH "Path prefix for finding dependencies")
+  endif()
 else()
-  set(DEPS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/usr" CACHE PATH "Path prefix for finding dependencies")
+  if(CMAKE_SYSTEM_NAME MATCHES "OpenBSD")
+    set(DEPS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/_usr" CACHE PATH "Path prefix for finding dependencies")
+  else()
+    set(DEPS_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/usr" CACHE PATH "Path prefix for finding dependencies")
+  endif()
   # When running from within CLion or Visual Studio,
   # build bundled dependencies automatically.
   if(NOT EXISTS ${DEPS_PREFIX}
@@ -83,6 +100,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  # Ignore case when comparing filenames on Windows and Mac.
+  set(CASE_INSENSITIVE_FILENAME TRUE)
   # Enable fixing case-insensitive filenames for Windows and Mac.
   set(USE_FNAME_CASE TRUE)
 endif()
@@ -120,12 +139,12 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY
 # If not in a git repo (e.g., a tarball) these tokens define the complete
 # version string, else they are combined with the result of `git describe`.
 set(NVIM_VERSION_MAJOR 0)
-set(NVIM_VERSION_MINOR 5)
+set(NVIM_VERSION_MINOR 8)
 set(NVIM_VERSION_PATCH 0)
 set(NVIM_VERSION_PRERELEASE "-dev") # for package maintainers
 
 # API level
-set(NVIM_API_LEVEL 7)         # Bump this after any API change.
+set(NVIM_API_LEVEL 10)         # Bump this after any API change.
 set(NVIM_API_LEVEL_COMPAT 0)  # Adjust this after a _breaking_ API change.
 set(NVIM_API_PRERELEASE true)
 
@@ -265,11 +284,35 @@ if(MSVC)
 else()
   add_compile_options(-Wall -Wextra -pedantic -Wno-unused-parameter
     -Wstrict-prototypes -std=gnu99 -Wshadow -Wconversion
+    -Wdouble-promotion
+    -Wmissing-noreturn
+    -Wmissing-format-attribute
     -Wmissing-prototypes)
 
-  check_c_compiler_flag(-Wimplicit-fallthrough HAS_WIMPLICIT_FALLTHROUGH_FLAG)
-  if(HAS_WIMPLICIT_FALLTHROUGH_FLAG)
+  check_c_compiler_flag(-Wimplicit-fallthrough HAVE_WIMPLICIT_FALLTHROUGH_FLAG)
+  if(HAVE_WIMPLICIT_FALLTHROUGH_FLAG)
     add_compile_options(-Wimplicit-fallthrough)
+  endif()
+
+  # Clang doesn't have -Wsuggest-attribute so check for each one.
+  check_c_compiler_flag(-Wsuggest-attribute=pure HAVE_WSUGGEST_ATTRIBUTE_PURE)
+  if(HAVE_WSUGGEST_ATTRIBUTE_PURE)
+    add_compile_options(-Wsuggest-attribute=pure)
+  endif()
+
+  check_c_compiler_flag(-Wsuggest-attribute=const HAVE_WSUGGEST_ATTRIBUTE_CONST)
+  if(HAVE_WSUGGEST_ATTRIBUTE_CONST)
+    add_compile_options(-Wsuggest-attribute=const)
+  endif()
+
+  check_c_compiler_flag(-Wsuggest-attribute=malloc HAVE_WSUGGEST_ATTRIBUTE_MALLOC)
+  if(HAVE_WSUGGEST_ATTRIBUTE_MALLOC)
+    add_compile_options(-Wsuggest-attribute=malloc)
+  endif()
+
+  check_c_compiler_flag(-Wsuggest-attribute=cold HAVE_WSUGGEST_ATTRIBUTE_COLD)
+  if(HAVE_WSUGGEST_ATTRIBUTE_COLD)
+    add_compile_options(-Wsuggest-attribute=cold)
   endif()
 
   # On FreeBSD 64 math.h uses unguarded C11 extension, which taints clang
@@ -308,6 +351,11 @@ if(UNIX)
   endif()
 endif()
 
+check_c_compiler_flag(-fno-common HAVE_FNO_COMMON)
+if (HAVE_FNO_COMMON)
+  add_compile_options(-fno-common)
+endif()
+
 check_c_compiler_flag(-fdiagnostics-color=auto HAS_DIAG_COLOR_FLAG)
 if(HAS_DIAG_COLOR_FLAG)
   if(CMAKE_GENERATOR MATCHES "Ninja")
@@ -317,12 +365,12 @@ if(HAS_DIAG_COLOR_FLAG)
   endif()
 endif()
 
-option(TRAVIS_CI_BUILD "Travis/sourcehut CI, extra flags will be set" OFF)
+option(CI_BUILD "CI, extra flags will be set" OFF)
 
-if(TRAVIS_CI_BUILD)
-  message(STATUS "Travis/sourcehut CI build enabled")
+if(CI_BUILD)
+  message(STATUS "CI build enabled")
   add_compile_options(-Werror)
-  if(DEFINED ENV{BUILD_32BIT})
+  if(DEFINED ENV{BUILD_UCHAR})
     # Get some test coverage for unsigned char
     add_compile_options(-funsigned-char)
   endif()
@@ -347,8 +395,8 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
   add_definitions(-D_GNU_SOURCE)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-  # Required for luajit.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT PREFER_LUA AND LUAJIT_VERSION LESS "2.1.0-beta3")
+  # Required for luajit < 2.1.0-beta3.
   set(CMAKE_EXE_LINKER_FLAGS
     "${CMAKE_EXE_LINKER_FLAGS} -pagezero_size 10000 -image_base 100000000")
   set(CMAKE_SHARED_LINKER_FLAGS
@@ -366,21 +414,46 @@ include_directories(SYSTEM ${LIBUV_INCLUDE_DIRS})
 find_package(Msgpack 1.0.0 REQUIRED)
 include_directories(SYSTEM ${MSGPACK_INCLUDE_DIRS})
 
-find_package(LibLUV 1.30.0 REQUIRED)
+find_package(LibLUV 1.43.0 REQUIRED)
 include_directories(SYSTEM ${LIBLUV_INCLUDE_DIRS})
 
-find_package(UTF8PROC REQUIRED)
-include_directories(SYSTEM ${UTF8PROC_INCLUDE_DIRS})
-if(WIN32)
-  add_definitions(-DUTF8PROC_STATIC)
-endif()
+find_package(TreeSitter REQUIRED)
+include_directories(SYSTEM ${TreeSitter_INCLUDE_DIRS})
 
+list(APPEND CMAKE_REQUIRED_INCLUDES "${TreeSitter_INCLUDE_DIRS}")
+list(APPEND CMAKE_REQUIRED_LIBRARIES "${TreeSitter_LIBRARIES}")
+check_c_source_compiles("
+#include <tree_sitter/api.h>
+int
+main(void)
+{
+  TSQueryCursor *cursor = ts_query_cursor_new();
+  ts_query_cursor_set_match_limit(cursor, 32);
+  return 0;
+}
+" TS_HAS_SET_MATCH_LIMIT)
+if(TS_HAS_SET_MATCH_LIMIT)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DNVIM_TS_HAS_SET_MATCH_LIMIT")
+endif()
+check_c_source_compiles("
+#include <stdlib.h>
+#include <tree_sitter/api.h>
+int
+main(void)
+{
+  ts_set_allocator(malloc, calloc, realloc, free);
+  return 0;
+}
+" TS_HAS_SET_ALLOCATOR)
+if(TS_HAS_SET_ALLOCATOR)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DNVIM_TS_HAS_SET_ALLOCATOR")
+endif()
 
 # Note: The test lib requires LuaJIT; it will be skipped if LuaJIT is missing.
 option(PREFER_LUA "Prefer Lua over LuaJIT in the nvim executable." OFF)
 
 if(PREFER_LUA)
-  find_package(Lua 5.1 REQUIRED)
+  find_package(Lua 5.1 EXACT REQUIRED)
   set(LUA_PREFERRED_INCLUDE_DIRS ${LUA_INCLUDE_DIR})
   set(LUA_PREFERRED_LIBRARIES ${LUA_LIBRARIES})
   # Passive (not REQUIRED): if LUAJIT_FOUND is not set, nvim-test is skipped.
@@ -436,11 +509,6 @@ endif()
 find_package(LIBVTERM 0.1 REQUIRED)
 include_directories(SYSTEM ${LIBVTERM_INCLUDE_DIRS})
 
-if(WIN32)
-  find_package(Winpty 0.4.3 REQUIRED)
-  include_directories(SYSTEM ${WINPTY_INCLUDE_DIRS})
-endif()
-
 option(CLANG_ASAN_UBSAN "Enable Clang address & undefined behavior sanitizer for nvim binary." OFF)
 option(CLANG_MSAN "Enable Clang memory sanitizer for nvim binary." OFF)
 option(CLANG_TSAN "Enable Clang thread sanitizer for nvim binary." OFF)
@@ -455,15 +523,15 @@ if((CLANG_ASAN_UBSAN OR CLANG_MSAN OR CLANG_TSAN) AND NOT CMAKE_C_COMPILER_ID MA
   message(FATAL_ERROR "Sanitizers are only supported for Clang")
 endif()
 
+if(ENABLE_LIBICONV)
+  find_package(Iconv REQUIRED)
+  include_directories(SYSTEM ${Iconv_INCLUDE_DIRS})
+endif()
+
 if(ENABLE_LIBINTL)
   # LibIntl (not Intl) selects our FindLibIntl.cmake script. #8464
   find_package(LibIntl REQUIRED)
   include_directories(SYSTEM ${LibIntl_INCLUDE_DIRS})
-endif()
-
-if(ENABLE_LIBICONV)
-  find_package(Iconv REQUIRED)
-  include_directories(SYSTEM ${Iconv_INCLUDE_DIRS})
 endif()
 
 # Determine platform's threading library. Set CMAKE_THREAD_PREFER_PTHREAD
@@ -510,6 +578,33 @@ endif()
 
 message(STATUS "Using Lua interpreter: ${LUA_PRG}")
 
+if(DEBUG)
+  option(COMPILE_LUA "Pre-compile Lua sources into bytecode (for sources that are included in the binary)" OFF)
+else()
+  option(COMPILE_LUA "Pre-compile Lua sources into bytecode (for sources that are included in the binary)" ON)
+endif()
+
+if(COMPILE_LUA AND NOT WIN32)
+  if(PREFER_LUA)
+    foreach(CURRENT_LUAC_PRG luac5.1 luac)
+      find_program(_CHECK_LUAC_PRG ${CURRENT_LUAC_PRG})
+      if(_CHECK_LUAC_PRG)
+        set(LUAC_PRG "${_CHECK_LUAC_PRG} -s -o - %s" CACHE STRING "Format for compiling to Lua bytecode")
+        break()
+      endif()
+    endforeach()
+  elseif(LUA_PRG MATCHES "luajit")
+    check_lua_module(${LUA_PRG} "jit.bcsave" LUAJIT_HAS_JIT_BCSAVE)
+    if(LUAJIT_HAS_JIT_BCSAVE)
+      set(LUAC_PRG "${LUA_PRG} -b -s %s -" CACHE STRING "Format for compiling to Lua bytecode")
+    endif()
+  endif()
+endif()
+
+if(LUAC_PRG)
+  message(STATUS "Using Lua compiler: ${LUAC_PRG}")
+endif()
+
 # Setup busted.
 find_program(BUSTED_PRG NAMES busted busted.bat)
 find_program(BUSTED_LUA_PRG busted-lua)
@@ -519,7 +614,6 @@ endif()
 
 find_program(LUACHECK_PRG luacheck)
 find_program(FLAKE8_PRG flake8)
-find_program(GPERF_PRG gperf)
 
 include(InstallHelpers)
 
@@ -557,9 +651,7 @@ if(BUSTED_PRG)
   # console pool: to do so we need to use the USES_TERMINAL
   # option, but this is only available in CMake 3.2
   set(TEST_TARGET_ARGS)
-  if(NOT (${CMAKE_VERSION} VERSION_LESS 3.2.0))
-    list(APPEND TEST_TARGET_ARGS "USES_TERMINAL")
-  endif()
+  list(APPEND TEST_TARGET_ARGS "USES_TERMINAL")
 
   set(UNITTEST_PREREQS nvim-test unittest-headers)
   set(FUNCTIONALTEST_PREREQS nvim printenv-test printargs-test shell-test streams-test tty-test ${GENERATED_HELP_TAGS})
@@ -658,21 +750,26 @@ endif()
 
 if(LUACHECK_PRG)
   add_custom_target(lualint
-    COMMAND ${LUACHECK_PRG} -q runtime/ src/ test/
+    COMMAND ${LUACHECK_PRG} -q runtime/ scripts/ src/ test/
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 else()
   add_custom_target(lualint false
     COMMENT "lualint: LUACHECK_PRG not defined")
 endif()
 
-set(CPACK_PACKAGE_NAME "Neovim")
-set(CPACK_PACKAGE_VENDOR "neovim.io")
-set(CPACK_PACKAGE_VERSION ${NVIM_VERSION_MEDIUM})
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Neovim")
-# Set toplevel directory/installer name as Neovim
-set(CPACK_PACKAGE_FILE_NAME "Neovim")
-set(CPACK_TOPLEVEL_TAG "Neovim")
-set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
-set(CPACK_NSIS_MODIFY_PATH ON)
-set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
-include(CPack)
+
+#add uninstall target
+if(NOT TARGET uninstall)
+    configure_file(
+        "cmake/UninstallHelper.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/UninstallHelper.cmake"
+        IMMEDIATE @ONLY)
+
+    add_custom_target(uninstall
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/UninstallHelper.cmake)
+endif()
+
+
+if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
+  add_subdirectory(packaging)
+endif()

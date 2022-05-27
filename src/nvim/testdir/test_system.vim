@@ -1,13 +1,16 @@
 " Tests for system() and systemlist()
 
-function! Test_System()
+source shared.vim
+source check.vim
+
+func Test_System()
   if !executable('echo') || !executable('cat') || !executable('wc')
     return
   endif
-  let out = system('echo 123')
+  let out = 'echo 123'->system()
   call assert_equal("123\n", out)
 
-  let out = systemlist('echo 123')
+  let out = 'echo 123'->systemlist()
   if &shell =~# 'cmd.exe$'
     call assert_equal(["123\r"], out)
   else
@@ -43,15 +46,15 @@ function! Test_System()
   bwipe!
 
   call assert_fails('call system("wc -l", 99999)', 'E86:')
-endfunction
+endfunc
 
-function! Test_system_exmode()
+func Test_system_exmode()
   if has('unix') " echo $? only works on Unix
-    let cmd = ' -es --headless -u NONE -c "source Xscript" +q; echo "result=$?"'
+    let cmd = ' -es -c "source Xscript" +q; echo "result=$?"'
     " Need to put this in a script, "catch" isn't found after an unknown
     " function.
     call writefile(['try', 'call doesnotexist()', 'catch', 'endtry'], 'Xscript')
-    let a = system(v:progpath . cmd)
+    let a = system(GetVimCommand() . cmd)
     call assert_match('result=0', a)
     call assert_equal(0, v:shell_error)
   endif
@@ -59,32 +62,82 @@ function! Test_system_exmode()
   " Error before try does set error flag.
   call writefile(['call nosuchfunction()', 'try', 'call doesnotexist()', 'catch', 'endtry'], 'Xscript')
   if has('unix') " echo $? only works on Unix
-    let a = system(v:progpath . cmd)
+    let a = system(GetVimCommand() . cmd)
     call assert_notequal('0', a[0])
   endif
 
-  let cmd = ' -es --headless -u NONE -c "source Xscript" +q'
-  let a = system(v:progpath . cmd)
+  let cmd = ' -es -c "source Xscript" +q'
+  let a = system(GetVimCommand() . cmd)
   call assert_notequal(0, v:shell_error)
   call delete('Xscript')
 
   if has('unix') " echo $? only works on Unix
-    let cmd = ' -es --headless -u NONE -c "call doesnotexist()" +q; echo $?'
-    let a = system(v:progpath. cmd)
+    let cmd = ' -es -c "call doesnotexist()" +q; echo $?'
+    let a = system(GetVimCommand() . cmd)
     call assert_notequal(0, a[0])
   endif
 
-  let cmd = ' -es --headless -u NONE -c "call doesnotexist()" +q'
-  let a = system(v:progpath. cmd)
+  let cmd = ' -es -c "call doesnotexist()" +q'
+  let a = system(GetVimCommand(). cmd)
   call assert_notequal(0, v:shell_error)
 
   if has('unix') " echo $? only works on Unix
-    let cmd = ' -es --headless -u NONE -c "call doesnotexist()|let a=1" +q; echo $?'
-    let a = system(v:progpath. cmd)
+    let cmd = ' -es -c "call doesnotexist()|let a=1" +q; echo $?'
+    let a = system(GetVimCommand() . cmd)
     call assert_notequal(0, a[0])
   endif
 
-  let cmd = ' -es --headless -u NONE -c "call doesnotexist()|let a=1" +q'
-  let a = system(v:progpath. cmd)
+  let cmd = ' -es -c "call doesnotexist()|let a=1" +q'
+  let a = system(GetVimCommand() . cmd)
   call assert_notequal(0, v:shell_error)
+endfunc
+
+func Test_system_with_shell_quote()
+  CheckMSWindows
+
+  call mkdir('Xdir with spaces', 'p')
+  call system('copy "%COMSPEC%" "Xdir with spaces\cmd.exe"')
+
+  let shell_save = &shell
+  let shellxquote_save = &shellxquote
+  try
+    " Set 'shell' always needs noshellslash.
+    let shellslash_save = &shellslash
+    set noshellslash
+    let shell_tests = [
+          \ expand('$COMSPEC'),
+          \ '"' . fnamemodify('Xdir with spaces\cmd.exe', ':p') . '"',
+          \]
+    let &shellslash = shellslash_save
+
+    let sxq_tests = ['', '(', '"']
+
+    " Matrix tests: 'shell' * 'shellxquote'
+    for shell in shell_tests
+      let &shell = shell
+      for sxq in sxq_tests
+        let &shellxquote = sxq
+
+        let msg = printf('shell=%s shellxquote=%s', &shell, &shellxquote)
+
+        try
+          let out = 'echo 123'->system()
+        catch
+          call assert_report(printf('%s: %s', msg, v:exception))
+          continue
+        endtry
+
+        " On Windows we may get a trailing space and CR.
+        if out != "123 \n"
+          call assert_equal("123\n", out, msg)
+        endif
+
+      endfor
+    endfor
+
+  finally
+    let &shell = shell_save
+    let &shellxquote = shellxquote_save
+    call delete('Xdir with spaces', 'rf')
+  endtry
 endfunc

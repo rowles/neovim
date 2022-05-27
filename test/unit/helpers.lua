@@ -13,7 +13,7 @@ local syscall = nil
 local check_cores = global_helpers.check_cores
 local dedent = global_helpers.dedent
 local neq = global_helpers.neq
-local map = global_helpers.map
+local map = global_helpers.tbl_map
 local eq = global_helpers.eq
 local trim = global_helpers.trim
 
@@ -96,8 +96,9 @@ local init = only_separate(function()
     c.func(unpack(c.args))
   end
   libnvim.time_init()
-  libnvim.early_init()
+  libnvim.fs_init()
   libnvim.event_init()
+  libnvim.early_init(nil)
   if child_calls_mod then
     for _, c in ipairs(child_calls_mod) do
       c.func(unpack(c.args))
@@ -778,7 +779,8 @@ local function cppimport(path)
   return cimport(Paths.test_source_path .. '/test/includes/pre/' .. path)
 end
 
-cimport('./src/nvim/types.h', './src/nvim/main.h', './src/nvim/os/time.h')
+cimport('./src/nvim/types.h', './src/nvim/main.h', './src/nvim/os/time.h',
+        './src/nvim/os/fs.h')
 
 local function conv_enum(etab, eval)
   local n = tonumber(eval)

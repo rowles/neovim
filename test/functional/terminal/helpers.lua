@@ -7,7 +7,9 @@ local nvim_dir = helpers.nvim_dir
 local feed_command, nvim = helpers.feed_command, helpers.nvim
 
 local function feed_data(data)
-  nvim('set_var', 'term_data', data)
+  -- A string containing NUL bytes is not converted to a Blob when
+  -- calling nvim_set_var() API, so convert it using Lua instead.
+  nvim('exec_lua', 'vim.g.term_data = ...', {data})
   nvim('command', 'call jobsend(b:terminal_job_id, term_data)')
 end
 
@@ -94,7 +96,7 @@ local function screen_setup(extra_rows, command, cols, opts)
     table.insert(expected, '{3:-- TERMINAL --}' .. ((' '):rep(cols - 14)))
     screen:expect(table.concat(expected, '|\n')..'|')
   else
-    -- This eval also acts as a wait().
+    -- This eval also acts as a poke_eventloop().
     if 0 == nvim('eval', "exists('b:terminal_job_id')") then
       error("terminal job failed to start")
     end

@@ -10,9 +10,11 @@ let s:did_load = 1
 set backspace=
 set directory^=.
 set fillchars=vert:\|,fold:-
+set fsync
 set laststatus=1
 set listchars=eol:$
-set nohidden smarttab noautoindent noautoread complete-=i noruler noshowcmd
+set joinspaces
+set nohidden nosmarttab noautoindent noautoread complete-=i noruler noshowcmd
 set nrformats+=octal
 set shortmess-=F
 set sidescroll=0
@@ -20,6 +22,13 @@ set tags=./tags,tags
 set undodir^=.
 set wildoptions=
 set startofline
+set sessionoptions+=options
+set viewoptions+=options
+set switchbuf=
+
+" Clear Nvim default mappings.
+mapclear
+mapclear!
 
 " Prevent Nvim log from writing to stderr.
 let $NVIM_LOG_FILE = exists($NVIM_LOG_FILE) ? $NVIM_LOG_FILE : 'Xnvim.log'

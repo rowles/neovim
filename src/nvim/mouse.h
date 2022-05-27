@@ -3,8 +3,8 @@
 
 #include <stdbool.h>
 
-#include "nvim/vim.h"
 #include "nvim/buffer_defs.h"
+#include "nvim/vim.h"
 
 // jump_to_mouse() returns one of first four these values, possibly with
 // some of the other three added.
@@ -16,6 +16,7 @@
 #define CURSOR_MOVED           0x100
 #define MOUSE_FOLD_CLOSE       0x200   // clicked on '-' in fold column
 #define MOUSE_FOLD_OPEN        0x400   // clicked on '+' in fold column
+#define MOUSE_WINBAR           0x800   // in window toolbar
 
 // flags for jump_to_mouse()
 #define MOUSE_FOCUS            0x01    // need to stay in this window
@@ -37,9 +38,8 @@
 // Direction for nv_mousescroll() and ins_mousescroll()
 #define MSCR_DOWN       0     // DOWN must be FALSE
 #define MSCR_UP         1
-#define MSCR_LEFT       -1
-#define MSCR_RIGHT      -2
-
+#define MSCR_LEFT       (-1)
+#define MSCR_RIGHT      (-2)
 
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "mouse.h.generated.h"

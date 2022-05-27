@@ -202,8 +202,13 @@ if(USE_BUNDLED_BUSTED)
     set(LUV_ARGS "CFLAGS=-O0 -g3 -fPIC")
     if(USE_BUNDLED_LIBUV)
       list(APPEND LUV_ARGS LIBUV_DIR=${HOSTDEPS_INSTALL_DIR})
+      # workaround for bug introduced in
+      # https://github.com/luarocks/luarocks/commit/83126ba324846b754ffc5e0345341f01262b3f86
+      if(MSVC)
+        list(APPEND LUV_ARGS LIBUV_LIBDIR=${HOSTDEPS_INSTALL_DIR}/lib)
+      endif()
     endif()
-    SET(LUV_PRIVATE_ARGS LUA_COMPAT53_INCDIR=${DEPS_BUILD_DIR}/src/lua-compat-5.3)
+    SET(LUV_PRIVATE_ARGS LUA_COMPAT53_INCDIR=${DEPS_BUILD_DIR}/src/lua-compat-5.3/c-api)
     add_custom_command(OUTPUT ${ROCKS_DIR}/luv
       COMMAND ${LUAROCKS_BINARY}
       ARGS make ${LUAROCKS_BUILDARGS} ${LUV_ARGS} ${LUV_PRIVATE_ARGS}
@@ -217,10 +222,10 @@ if(USE_BUNDLED_BUSTED)
   endif()
   add_custom_target(luv DEPENDS ${ROCKS_DIR}/luv)
 
-  # nvim-client
+  # nvim-client: https://github.com/neovim/lua-client
   add_custom_command(OUTPUT ${ROCKS_DIR}/nvim-client
     COMMAND ${LUAROCKS_BINARY}
-    ARGS build nvim-client 0.2.0-1 ${LUAROCKS_BUILDARGS}
+    ARGS build nvim-client 0.2.3-1 ${LUAROCKS_BUILDARGS}
     DEPENDS luv)
   add_custom_target(nvim-client DEPENDS ${ROCKS_DIR}/nvim-client)
 

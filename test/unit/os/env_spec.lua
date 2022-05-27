@@ -78,15 +78,22 @@ describe('env.c', function()
   end)
 
   describe('os_setenv_append_path', function()
-    itp('appends /foo/bar to $PATH', function()
+    itp('appends :/foo/bar to $PATH', function()
       local original_path = os.getenv('PATH')
-      eq(true, cimp.os_setenv_append_path(to_cstr('/foo/bar/baz')))
+      eq(true, cimp.os_setenv_append_path(to_cstr('/foo/bar/baz.exe')))
       eq(original_path..':/foo/bar', os.getenv('PATH'))
+    end)
+
+    itp('avoids redundant separator when appending to $PATH #7377', function()
+      os_setenv('PATH', '/a/b/c:', true)
+      eq(true, cimp.os_setenv_append_path(to_cstr('/foo/bar/baz.exe')))
+      -- Must not have duplicate separators. #7377
+      eq('/a/b/c:/foo/bar', os.getenv('PATH'))
     end)
 
     itp('returns false if `fname` is not absolute', function()
       local original_path = os.getenv('PATH')
-      eq(false, cimp.os_setenv_append_path(to_cstr('foo/bar/baz')))
+      eq(false, cimp.os_setenv_append_path(to_cstr('foo/bar/baz.exe')))
       eq(original_path, os.getenv('PATH'))
     end)
   end)
@@ -147,7 +154,7 @@ describe('env.c', function()
     local value = 'TESTVALUE'
     os_setenv(name, value, 1)
     eq(OK, os_unsetenv(name))
-    neq(os_getenv(name), value)
+    neq(value, os_getenv(name))
     -- Depending on the platform the var might be unset or set as ''
     assert.True(os_getenv(name) == nil or os_getenv(name) == '')
     if os_getenv(name) == nil then
@@ -172,7 +179,7 @@ describe('env.c', function()
         i = i + 1
         name = cimp.os_getenvname_at_index(i)
       end
-      eq(true, (table.getn(names)) > 0)
+      eq(true, #names > 0)
       eq(true, found_name)
     end)
 
@@ -184,7 +191,7 @@ describe('env.c', function()
 
       if ffi.abi('64bit') then
         -- couldn't use a bigger number because it gets converted to
-        -- double somewere, should be big enough anyway
+        -- double somewhere, should be big enough anyway
         -- maxuint64 = ffi.new 'size_t', 18446744073709551615
         local maxuint64 = ffi.new('size_t', 18446744073709000000)
         eq(NULL, cimp.os_getenvname_at_index(maxuint64))

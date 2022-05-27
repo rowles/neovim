@@ -41,10 +41,27 @@ function! s:check_config() abort
           \   'Check `:verbose set paste?` to see if a plugin or script set the option.', ])
   endif
 
-  let shadafile = (empty(&shadafile) || &shadafile ==# 'NONE') ? stdpath('data').'/shada/main.shada' : &shadafile
-  if !empty(shadafile) && (!filereadable(shadafile) || !filewritable(shadafile))
+  let writeable = v:true
+  let shadafile = empty(&shada) ? &shada : substitute(matchstr(
+        \ split(&shada, ',')[-1], '^n.\+'), '^n', '', '')
+  let shadafile = empty(&shadafile) ? empty(shadafile) ?
+        \ stdpath('state').'/shada/main.shada' : expand(shadafile)
+        \ : &shadafile ==# 'NONE' ? '' : &shadafile
+  if !empty(shadafile) && empty(glob(shadafile))
+    " Since this may be the first time neovim has been run, we will try to
+    " create a shada file
+    try
+      wshada
+    catch /.*/
+      let writeable = v:false
+    endtry
+  endif
+  if !writeable || (!empty(shadafile) &&
+        \ (!filereadable(shadafile) || !filewritable(shadafile)))
     let ok = v:false
-    call health#report_error('shada file is not '.(filereadable(shadafile) ? 'writeable' : 'readable').":\n".shadafile)
+    call health#report_error('shada file is not '.
+          \ ((!writeable || filereadable(shadafile)) ?
+          \ 'writeable' : 'readable').":\n".shadafile)
   endif
 
   if ok
@@ -87,8 +104,8 @@ function! s:check_rplugin_manifest() abort
         if !has_key(existing_rplugins, script)
           let msg = printf('"%s" is not registered.', fnamemodify(path, ':t'))
           if python_version ==# 'pythonx'
-            if !has('python2') && !has('python3')
-              let msg .= ' (python2 and python3 not available)'
+            if !has('python3')
+              let msg .= ' (python3 not available)'
             endif
           elseif !has(python_version)
             let msg .= printf(' (%s not available)', python_version)
@@ -127,6 +144,35 @@ function! s:check_performance() abort
           \ ['Install a different Nvim package, or rebuild with `CMAKE_BUILD_TYPE=RelWithDebInfo`.',
           \  s:suggest_faq])
   endif
+
+  " check for slow shell invocation
+  let slow_cmd_time = 1.5
+  let start_time = reltime()
+  call system('echo')
+  let elapsed_time = reltimefloat(reltime(start_time))
+  if elapsed_time > slow_cmd_time
+    call health#report_warn(
+          \ 'Slow shell invocation (took '.printf('%.2f', elapsed_time).' seconds).')
+  endif
+endfunction
+
+function! s:get_tmux_option(option) abort
+  let cmd = 'tmux show-option -qvg '.a:option  " try global scope
+  let out = system(split(cmd))
+  let val = substitute(out, '\v(\s|\r|\n)', '', 'g')
+  if v:shell_error
+    call health#report_error('command failed: '.cmd."\n".out)
+    return 'error'
+  elseif empty(val)
+    let cmd = 'tmux show-option -qvgs '.a:option  " try session scope
+    let out = system(split(cmd))
+    let val = substitute(out, '\v(\s|\r|\n)', '', 'g')
+    if v:shell_error
+      call health#report_error('command failed: '.cmd."\n".out)
+      return 'error'
+    endif
+  endif
+  return val
 endfunction
 
 function! s:check_tmux() abort
@@ -136,30 +182,41 @@ function! s:check_tmux() abort
   call health#report_start('tmux')
 
   " check escape-time
-  let suggestions = ["Set escape-time in ~/.tmux.conf:\nset-option -sg escape-time 10",
+  let suggestions = ["set escape-time in ~/.tmux.conf:\nset-option -sg escape-time 10",
         \ s:suggest_faq]
-  let cmd = 'tmux show-option -qvgs escape-time'
-  let out = system(cmd)
-  let tmux_esc_time = substitute(out, '\v(\s|\r|\n)', '', 'g')
-  if v:shell_error
-    call health#report_error('command failed: '.cmd."\n".out)
-  elseif empty(tmux_esc_time)
-    call health#report_error('escape-time is not set', suggestions)
-  elseif tmux_esc_time > 300
-    call health#report_error(
-        \ 'escape-time ('.tmux_esc_time.') is higher than 300ms', suggestions)
-  else
-    call health#report_ok('escape-time: '.tmux_esc_time.'ms')
+  let tmux_esc_time = s:get_tmux_option('escape-time')
+  if tmux_esc_time !=# 'error'
+    if empty(tmux_esc_time)
+      call health#report_error('`escape-time` is not set', suggestions)
+    elseif tmux_esc_time > 300
+      call health#report_error(
+          \ '`escape-time` ('.tmux_esc_time.') is higher than 300ms', suggestions)
+    else
+      call health#report_ok('escape-time: '.tmux_esc_time)
+    endif
+  endif
+
+  " check focus-events
+  let suggestions = ["(tmux 1.9+ only) Set `focus-events` in ~/.tmux.conf:\nset-option -g focus-events on"]
+  let tmux_focus_events = s:get_tmux_option('focus-events')
+  call health#report_info('Checking stuff')
+  if tmux_focus_events !=# 'error'
+    if empty(tmux_focus_events) || tmux_focus_events !=# 'on'
+      call health#report_warn(
+          \ "`focus-events` is not enabled. |'autoread'| may not work.", suggestions)
+    else
+      call health#report_ok('focus-events: '.tmux_focus_events)
+    endif
   endif
 
   " check default-terminal and $TERM
   call health#report_info('$TERM: '.$TERM)
   let cmd = 'tmux show-option -qvg default-terminal'
-  let out = system(cmd)
+  let out = system(split(cmd))
   let tmux_default_term = substitute(out, '\v(\s|\r|\n)', '', 'g')
   if empty(tmux_default_term)
     let cmd = 'tmux show-option -qvgs default-terminal'
-    let out = system(cmd)
+    let out = system(split(cmd))
     let tmux_default_term = substitute(out, '\v(\s|\r|\n)', '', 'g')
   endif
 
@@ -178,7 +235,7 @@ function! s:check_tmux() abort
   endif
 
   " check for RGB capabilities
-  let info = system('tmux server-info')
+  let info = system(['tmux', 'server-info'])
   let has_tc = stridx(info, " Tc: (flag) true") != -1
   let has_rgb = stridx(info, " RGB: (flag) true") != -1
   if !has_tc && !has_rgb
@@ -195,17 +252,21 @@ function! s:check_terminal() abort
   endif
   call health#report_start('terminal')
   let cmd = 'infocmp -L'
-  let out = system(cmd)
+  let out = system(split(cmd))
   let kbs_entry   = matchstr(out, 'key_backspace=[^,[:space:]]*')
   let kdch1_entry = matchstr(out, 'key_dc=[^,[:space:]]*')
 
   if v:shell_error
+        \ && (!has('win32')
+        \ || empty(matchstr(out,
+        \                   'infocmp: couldn''t open terminfo file .\+'
+        \                   ..'\%(conemu\|vtpcon\|win32con\)')))
     call health#report_error('command failed: '.cmd."\n".out)
   else
     call health#report_info('key_backspace (kbs) terminfo entry: '
-        \ .(empty(kbs_entry) ? '? (not found)' : kbs_entry))
+          \ .(empty(kbs_entry) ? '? (not found)' : kbs_entry))
     call health#report_info('key_dc (kdch1) terminfo entry: '
-        \ .(empty(kbs_entry) ? '? (not found)' : kdch1_entry))
+          \ .(empty(kbs_entry) ? '? (not found)' : kdch1_entry))
   endif
   for env_var in ['XTERM_VERSION', 'VTE_VERSION', 'TERM_PROGRAM', 'COLORTERM', 'SSH_TTY']
     if exists('$'.env_var)

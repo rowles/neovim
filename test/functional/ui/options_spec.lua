@@ -4,6 +4,7 @@ local clear = helpers.clear
 local command = helpers.command
 local eq = helpers.eq
 local shallowcopy = helpers.shallowcopy
+local eval = helpers.eval
 
 describe('UI receives option updates', function()
   local screen
@@ -14,12 +15,14 @@ describe('UI receives option updates', function()
       arabicshape=true,
       emoji=true,
       guifont='',
-      guifontset='',
       guifontwide='',
       linespace=0,
       pumblend=0,
+      mousefocus=false,
       showtabline=1,
       termguicolors=false,
+      ttimeout=true,
+      ttimeoutlen=50,
       ext_cmdline=false,
       ext_popupmenu=false,
       ext_tabline=false,
@@ -108,6 +111,24 @@ describe('UI receives option updates', function()
       eq(expected, screen.options)
     end)
 
+    command("set mousefocus")
+    expected.mousefocus = true
+    screen:expect(function()
+      eq(expected, screen.options)
+    end)
+
+    command("set nottimeout")
+    expected.ttimeout = false
+    screen:expect(function()
+      eq(expected, screen.options)
+    end)
+
+    command("set ttimeoutlen=100")
+    expected.ttimeoutlen = 100
+    screen:expect(function()
+      eq(expected, screen.options)
+    end)
+
     command("set all&")
     screen:expect(function()
       eq(defaults, screen.options)
@@ -147,4 +168,43 @@ describe('UI receives option updates', function()
 
   it('from startup options with --headless', function() startup_test(true) end)
   it('from startup options with --embed', function() startup_test(false) end)
+end)
+
+describe('UI can set terminal option', function()
+  local screen
+  before_each(function()
+    -- by default we implicity "--cmd 'set bg=light'" which ruins everything
+    clear{args_rm={'--cmd'}}
+    screen = Screen.new(20,5)
+  end)
+
+  it('term_background', function()
+    eq('dark', eval '&background')
+
+    screen:attach {term_background='light'}
+    eq('light', eval '&background')
+  end)
+
+  it("term_background but not if 'background' already set by user", function()
+    eq('dark', eval '&background')
+    command 'set background=dark'
+
+    screen:attach {term_background='light'}
+
+    eq('dark', eval '&background')
+  end)
+
+  it('term_name', function()
+    eq('nvim', eval '&term')
+
+    screen:attach {term_name='xterm'}
+    eq('xterm', eval '&term')
+  end)
+
+  it('term_colors', function()
+    eq('256', eval '&t_Co')
+
+    screen:attach {term_colors=8}
+    eq('8', eval '&t_Co')
+  end)
 end)

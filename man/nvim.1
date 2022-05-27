@@ -100,7 +100,7 @@ Useful for scripting because it does NOT start a UI, unlike
 .Ic :help silent-mode
 .It Fl d
 Diff mode.
-Show the difference between two to four files, similar to
+Show the difference between two to eight files, similar to
 .Xr sdiff 1 .
 .Ic ":help diff"
 .It Fl R
@@ -113,9 +113,6 @@ associated with a file.
 To overwrite a file, add an exclamation mark to the relevant Ex command, such as
 .Ic :w! .
 .Ic ":help 'readonly'"
-.It Fl Z
-Restricted mode.
-Disable commands that make use of an external shell.
 .It Fl m
 Resets the 'write' option, to disable file modifications.
 Writing to a file is disabled, but buffers can still be modified.
@@ -180,8 +177,7 @@ If
 .Ar vimrc
 is
 .Cm NORC ,
-do not load any initialization files (except plugins),
-and do not attempt to parse environment variables.
+do not load any initialization files (except plugins).
 If
 .Ar vimrc
 is
@@ -192,7 +188,7 @@ loading plugins is also skipped.
 Use
 .Ar shada
 instead of the default
-.Pa ~/.local/share/nvim/shada/main.shada .
+.Pa ~/.local/state/nvim/shada/main.shada .
 If
 .Ar shada
 is
@@ -204,7 +200,7 @@ Skip loading plugins.
 Implied by
 .Cm -u NONE .
 .It Fl -clean
-Skip loading plugins and shada (viminfo) file.
+Mimic a fresh install of Nvim. Skip loading non-builtin plugins and shada (viminfo) file.
 .It Fl o Ns Op Ar N
 Open
 .Ar N
@@ -330,7 +326,7 @@ Print version information and exit.
 .Sh ENVIRONMENT
 .Bl -tag -width Fl
 .It Ev NVIM_LOG_FILE
-Low-level log file, usually found at ~/.local/share/nvim/log.
+Low-level log file, usually found at ~/.local/state/nvim/log.
 :help $NVIM_LOG_FILE
 .It Ev VIM
 Used to locate user files, such as init.vim.
@@ -344,11 +340,19 @@ Path to the user-local configuration directory, see
 Defaults to
 .Pa ~/.config .
 :help xdg
-.It Ev XDG_DATA_HOME
+.It Ev XDG_STATE_HOME
 Like
 .Ev XDG_CONFIG_HOME ,
 but used to store data not generally edited by the user,
 namely swap, backup, and ShaDa files.
+Defaults to
+.Pa ~/.local/state .
+:help xdg
+.It Ev XDG_DATA_HOME
+Like
+.Ev XDG_CONFIG_HOME ,
+but used to store data not generally edited by the user,
+things like runtime files.
 Defaults to
 .Pa ~/.local/share .
 :help xdg
@@ -378,7 +382,7 @@ See also
 System-global
 .Nm
 configuration file.
-.It Pa /usr/local/share/nvim
+.It Pa $VIM
 System-global
 .Nm
 runtime directory.

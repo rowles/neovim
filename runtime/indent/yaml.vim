@@ -1,15 +1,13 @@
 " Vim indent file
-" Language:         YAML
-" Maintainer:       Nikolai Pavlov <zyx.vim@gmail.com>
-" Last Change:	    2017 Jun 13
+" Language:	YAML
+" Maintainer:	Nikolai Pavlov <zyx.vim@gmail.com>
+" Last Update:	Lukas Reineke
+" Last Change:	2022 May 02
 
 " Only load this indent file when no other was loaded.
 if exists('b:did_indent')
   finish
 endif
-
-let s:save_cpo = &cpo
-set cpo&vim
 
 let b:did_indent = 1
 
@@ -24,12 +22,15 @@ if exists('*GetYAMLIndent')
     finish
 endif
 
+let s:save_cpo = &cpo
+set cpo&vim
+
 function s:FindPrevLessIndentedLine(lnum, ...)
     let prevlnum = prevnonblank(a:lnum-1)
     let curindent = a:0 ? a:1 : indent(a:lnum)
     while           prevlnum
                 \&&  indent(prevlnum) >=  curindent
-                \&& getline(prevlnum) =~# '^\s*#'
+                \&& getline(prevlnum) !~# '^\s*#'
         let prevlnum = prevnonblank(prevlnum-1)
     endwhile
     return prevlnum

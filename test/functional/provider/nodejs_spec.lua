@@ -8,8 +8,9 @@ local retry = helpers.retry
 
 do
   clear()
-  if missing_provider('node') then
-    pending("Missing nodejs host, or nodejs version is too old.", function()end)
+  local reason = missing_provider('node')
+  if reason then
+    pending(string.format("Missing nodejs host, or nodejs version is too old (%s)", reason), function() end)
     return
   end
 end
@@ -28,7 +29,7 @@ describe('nodejs host', function()
     local fname = 'Xtest-nodejs-hello.js'
     write_file(fname, [[
       const neovim = require('neovim');
-      const nvim = neovim.attach({socket: process.env.NVIM_LISTEN_ADDRESS});
+      const nvim = neovim.attach({socket: process.env.NVIM});
       nvim.command('let g:job_out = "hello"');
     ]])
     command('let g:job_id = jobstart(["node", "'..fname..'"])')
@@ -38,7 +39,7 @@ describe('nodejs host', function()
     local fname = 'Xtest-nodejs-hello-plugin.js'
     write_file(fname, [[
       const neovim = require('neovim');
-      const nvim = neovim.attach({socket: process.env.NVIM_LISTEN_ADDRESS});
+      const nvim = neovim.attach({socket: process.env.NVIM});
 
       class TestPlugin {
         hello() {

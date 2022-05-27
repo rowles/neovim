@@ -15,13 +15,13 @@ local check_cores = global_helpers.check_cores
 local check_logs = global_helpers.check_logs
 local dedent = global_helpers.dedent
 local eq = global_helpers.eq
-local filter = global_helpers.filter
+local filter = global_helpers.tbl_filter
 local is_os = global_helpers.is_os
-local map = global_helpers.map
+local map = global_helpers.tbl_map
 local ok = global_helpers.ok
 local sleep = global_helpers.sleep
 local tbl_contains = global_helpers.tbl_contains
-local write_file = global_helpers.write_file
+local fail = global_helpers.fail
 
 local module = {
   NIL = mpack.NIL,
@@ -37,17 +37,20 @@ module.nvim_prog = (
 module.nvim_set = (
   'set shortmess+=IS background=light noswapfile noautoindent startofline'
   ..' laststatus=1 undodir=. directory=. viewdir=. backupdir=.'
-  ..' belloff= wildoptions-=pum noshowcmd noruler nomore redrawdebug=invalid')
+  ..' belloff= wildoptions-=pum joinspaces noshowcmd noruler nomore redrawdebug=invalid')
 module.nvim_argv = {
   module.nvim_prog, '-u', 'NONE', '-i', 'NONE',
-  '--cmd', module.nvim_set, '--embed'}
+  '--cmd', module.nvim_set,
+  '--cmd', 'mapclear',
+  '--cmd', 'mapclear!',
+  '--embed'}
+
 -- Directory containing nvim.
 module.nvim_dir = module.nvim_prog:gsub("[/\\][^/\\]+$", "")
 if module.nvim_dir == module.nvim_prog then
   module.nvim_dir = "."
 end
 
-local tmpname = global_helpers.tmpname
 local iswin = global_helpers.iswin
 local prepend_argv
 
@@ -89,10 +92,7 @@ function module.get_session()
   return session
 end
 
-function module.set_session(s, keep)
-  if session and not keep then
-    session:close()
-  end
+function module.set_session(s)
   session = s
 end
 
@@ -186,7 +186,12 @@ function module.expect_msg_seq(...)
     if status then
       return result
     end
-    final_error = cat_err(final_error, result)
+    local message = result
+    if type(result) == "table" then
+      -- 'eq' returns several things
+      message = result.message
+    end
+    final_error = cat_err(final_error, message)
   end
   error(final_error)
 end
@@ -354,10 +359,15 @@ local function remove_args(args, args_rm)
   return new_args
 end
 
-function module.spawn(argv, merge, env)
+--- @param io_extra used for stdin_fd, see :help ui-option
+function module.spawn(argv, merge, env, keep, io_extra)
+  if session and not keep then
+    session:close()
+  end
+
   local child_stream = ChildProcessStream.spawn(
       merge and module.merge_args(prepend_argv, argv) or argv,
-      env)
+      env, io_extra)
   return Session.new(child_stream)
 end
 
@@ -404,17 +414,18 @@ end
 --    clear('-e')
 --    clear{args={'-e'}, args_rm={'-i'}, env={TERM=term}}
 function module.clear(...)
-  local argv, env = module.new_argv(...)
-  module.set_session(module.spawn(argv, nil, env))
+  local argv, env, io_extra = module.new_argv(...)
+  module.set_session(module.spawn(argv, nil, env, nil, io_extra))
 end
 
 -- Builds an argument list for use in clear().
 --
---@see clear() for parameters.
+---@see clear() for parameters.
 function module.new_argv(...)
   local args = {unpack(module.nvim_argv)}
   table.insert(args, '--headless')
   local new_args
+  local io_extra
   local env = nil
   local opts = select(1, ...)
   if type(opts) == 'table' then
@@ -436,7 +447,9 @@ function module.new_argv(...)
         'NVIM_LOG_FILE',
         'NVIM_RPLUGIN_MANIFEST',
         'GCOV_ERROR_FILE',
+        'XDG_DATA_DIRS',
         'TMPDIR',
+        'VIMRUNTIME',
       }) do
         if not env_tbl[k] then
           env_tbl[k] = os.getenv(k)
@@ -448,13 +461,14 @@ function module.new_argv(...)
       end
     end
     new_args = opts.args or {}
+    io_extra = opts.io_extra
   else
     new_args = {...}
   end
   for _, arg in ipairs(new_args) do
     table.insert(args, arg)
   end
-  return args, env
+  return args, env, io_extra
 end
 
 function module.insert(...)
@@ -479,36 +493,27 @@ function module.feed_command(...)
   end
 end
 
-local sourced_fnames = {}
+-- @deprecated use nvim_exec()
 function module.source(code)
-  local fname = tmpname()
-  write_file(fname, code)
-  module.command('source '..fname)
-  -- DO NOT REMOVE FILE HERE.
-  -- do_source() has a habit of checking whether files are “same” by using inode
-  -- and device IDs. If you run two source() calls in quick succession there is
-  -- a good chance that underlying filesystem will reuse the inode, making files
-  -- appear as “symlinks” to do_source when it checks FileIDs. With current
-  -- setup linux machines (both QB, travis and mine(ZyX-I) with XFS) do reuse
-  -- inodes, Mac OS machines (again, both QB and travis) do not.
-  --
-  -- Files appearing as “symlinks” mean that both the first and the second
-  -- source() calls will use same SID, which may fail some tests which check for
-  -- exact numbers after `<SNR>` in e.g. function names.
-  sourced_fnames[#sourced_fnames + 1] = fname
-  return fname
+  module.exec(dedent(code))
+end
+
+function module.has_powershell()
+  return module.eval('executable("'..(iswin() and 'powershell' or 'pwsh')..'")') == 1
 end
 
 function module.set_shell_powershell()
   local shell = iswin() and 'powershell' or 'pwsh'
-  assert(module.eval('executable("'..shell..'")'))
-  local cmd = 'Remove-Item -Force '..table.concat(iswin()
+  assert(module.has_powershell())
+  local set_encoding = '[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;'
+  local cmd = set_encoding..'Remove-Item -Force '..table.concat(iswin()
     and {'alias:cat', 'alias:echo', 'alias:sleep'}
     or  {'alias:echo'}, ',')..';'
-  module.source([[
+  module.exec([[
     let &shell = ']]..shell..[['
-    set shellquote= shellpipe=\| shellxquote=
-    let &shellredir = '| Out-File -Encoding UTF8'
+    set shellquote= shellxquote=
+    let &shellpipe = '2>&1 | Out-File -Encoding UTF8 %s; exit $LastExitCode'
+    let &shellredir = '2>&1 | Out-File -Encoding UTF8 %s; exit $LastExitCode'
     let &shellcmdflag = '-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command ]]..cmd..[['
   ]])
 end
@@ -544,14 +549,19 @@ function module.curbuf(method, ...)
   return module.buffer(method, 0, ...)
 end
 
-function module.wait()
-  -- Execute 'nvim_eval' (a deferred function) to block
-  -- until all pending input is processed.
+function module.poke_eventloop()
+  -- Execute 'nvim_eval' (a deferred function) to
+  -- force at least one main_loop iteration
   session:request('nvim_eval', '1')
 end
 
+function module.buf_lines(bufnr)
+  return module.exec_lua("return vim.api.nvim_buf_get_lines((...), 0, -1, false)", bufnr)
+end
+
+---@see buf_lines()
 function module.curbuf_contents()
-  module.wait()  -- Before inspecting the buffer, process all input.
+  module.poke_eventloop()  -- Before inspecting the buffer, do whatever.
   return table.concat(module.curbuf('get_lines', 0, -1, true), '\n')
 end
 
@@ -578,9 +588,40 @@ function module.expect_any(contents)
   return ok(nil ~= string.find(module.curbuf_contents(), contents, 1, true))
 end
 
+function module.expect_events(expected, received, kind)
+  local inspect = require'vim.inspect'
+  if not pcall(eq, expected, received) then
+    local msg = 'unexpected '..kind..' received.\n\n'
+
+    msg = msg .. 'received events:\n'
+    for _, e in ipairs(received) do
+      msg = msg .. '  ' .. inspect(e) .. ';\n'
+    end
+    msg = msg .. '\nexpected events:\n'
+    for _, e in ipairs(expected) do
+      msg = msg .. '  ' .. inspect(e) .. ';\n'
+    end
+    fail(msg)
+  end
+  return received
+end
+
 -- Checks that the Nvim session did not terminate.
 function module.assert_alive()
   assert(2 == module.eval('1+1'), 'crash? request failed')
+end
+
+-- Asserts that buffer is loaded and visible in the current tabpage.
+function module.assert_visible(bufnr, visible)
+  assert(type(visible) == 'boolean')
+  eq(visible, module.bufmeths.is_loaded(bufnr))
+  if visible then
+    assert(-1 ~= module.funcs.bufwinnr(bufnr),
+      'expected buffer to be visible in current tabpage: '..tostring(bufnr))
+  else
+    assert(-1 == module.funcs.bufwinnr(bufnr),
+      'expected buffer NOT visible in current tabpage: '..tostring(bufnr))
+  end
 end
 
 local function do_rmdir(path)
@@ -678,6 +719,19 @@ function module.pending_win32(pending_fn)
   end
 end
 
+function module.pending_c_parser(pending_fn)
+  local status, msg = unpack(module.exec_lua([[ return {pcall(vim.treesitter.require_language, 'c')} ]]))
+  if not status then
+    if module.isCI() then
+      error("treesitter C parser not found, required on CI: " .. msg)
+    else
+      pending_fn 'no C parser, skipping'
+      return true
+    end
+  end
+  return false
+end
+
 -- Calls pending() and returns `true` if the system is too slow to
 -- run fragile or expensive tests. Else returns `false`.
 function module.skip_fragile(pending_fn, cond)
@@ -705,21 +759,16 @@ module.curbufmeths = module.create_callindex(module.curbuf)
 module.curwinmeths = module.create_callindex(module.curwin)
 module.curtabmeths = module.create_callindex(module.curtab)
 
-function module.exec_lua(code, ...)
-  return module.meths.exec_lua(code, {...})
+function module.exec(code)
+  return module.meths.exec(code, false)
 end
 
-function module.redir_exec(cmd)
-  module.meths.set_var('__redir_exec_cmd', cmd)
-  module.command([[
-    redir => g:__redir_exec_output
-      silent! execute g:__redir_exec_cmd
-    redir END
-  ]])
-  local ret = module.meths.get_var('__redir_exec_output')
-  module.meths.del_var('__redir_exec_output')
-  module.meths.del_var('__redir_exec_cmd')
-  return ret
+function module.exec_capture(code)
+  return module.meths.exec(code, true)
+end
+
+function module.exec_lua(code, ...)
+  return module.meths.exec_lua(code, {...})
 end
 
 function module.get_pathsep()
@@ -731,7 +780,7 @@ function module.pathroot()
   return iswin() and (module.nvim_dir:sub(1,2)..pathsep) or '/'
 end
 
--- Returns a valid, platform-independent $NVIM_LISTEN_ADDRESS.
+-- Returns a valid, platform-independent Nvim listen address.
 -- Useful for communicating with child instances.
 function module.new_pipename()
   -- HACK: Start a server temporarily, get the name, then stop it.
@@ -741,15 +790,15 @@ function module.new_pipename()
 end
 
 function module.missing_provider(provider)
-  if provider == 'ruby' or provider == 'node' then
-    local prog = module.funcs['provider#' .. provider .. '#Detect']()
-    return prog == '' and (provider .. ' not detected') or false
+  if provider == 'ruby' or provider == 'node' or provider == 'perl' then
+    local e = module.funcs['provider#'..provider..'#Detect']()[2]
+    return e ~= '' and e or false
   elseif provider == 'python' or provider == 'python3' then
     local py_major_version = (provider == 'python3' and 3 or 2)
-    local errors = module.funcs['provider#pythonx#Detect'](py_major_version)[2]
-    return errors ~= '' and errors or false
+    local e = module.funcs['provider#pythonx#Detect'](py_major_version)[2]
+    return e ~= '' and e or false
   else
-    assert(false, 'Unknown provider: ' .. provider)
+    assert(false, 'Unknown provider: '..provider)
   end
 end
 
@@ -767,7 +816,7 @@ function module.alter_slashes(obj)
     end
     return ret
   else
-    assert(false, 'Could only alter slashes for tables of strings and strings')
+    assert(false, 'expected string or table of strings, got '..type(obj))
   end
 end
 
@@ -810,14 +859,18 @@ function module.os_kill(pid)
     or  'kill -9 '..pid..' > /dev/null'))
 end
 
+-- Create folder with non existing parents
+function module.mkdir_p(path)
+  return os.execute((iswin()
+    and 'mkdir '..path
+    or 'mkdir -p '..path))
+end
+
 module = global_helpers.tbl_extend('error', module, global_helpers)
 
 return function(after_each)
   if after_each then
     after_each(function()
-      for _, fname in ipairs(sourced_fnames) do
-        os.remove(fname)
-      end
       check_logs()
       check_cores('build/bin/nvim')
       if session then

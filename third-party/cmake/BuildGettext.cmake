@@ -12,10 +12,6 @@ if(MSVC)
       -DTARGET=gettext
       -DUSE_EXISTING_SRC_DIR=${USE_EXISTING_SRC_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/DownloadAndExtractFile.cmake
-    PATCH_COMMAND ${GIT_EXECUTABLE} -C ${DEPS_BUILD_DIR}/src/gettext init
-      COMMAND ${GIT_EXECUTABLE} -C ${DEPS_BUILD_DIR}/src/gettext apply --ignore-whitespace
-        ${CMAKE_CURRENT_SOURCE_DIR}/patches/gettext-Fix-compilation-on-a-system-without-alloca.patch
-        ${CMAKE_CURRENT_SOURCE_DIR}/patches/gettext-Fix-building-with-MSVC.patch
     CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GettextCMakeLists.txt
         ${DEPS_BUILD_DIR}/src/gettext/CMakeLists.txt
@@ -25,6 +21,7 @@ if(MSVC)
         -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN}
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
+        -DCMAKE_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
         -DLIBICONV_INCLUDE_DIRS=${DEPS_INSTALL_DIR}/include
         -DLIBICONV_LIBRARIES=${DEPS_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}libcharset${CMAKE_STATIC_LIBRARY_SUFFIX}$<SEMICOLON>${DEPS_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}libiconv${CMAKE_STATIC_LIBRARY_SUFFIX}
     BUILD_COMMAND ${CMAKE_COMMAND} --build . --config ${CMAKE_BUILD_TYPE}

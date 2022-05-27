@@ -1,6 +1,6 @@
 " Tests for multi-line regexps with ":s".
 
-function! Test_multiline_subst()
+func Test_multiline_subst()
   enew!
   call append(0, ["1 aa",
 	      \ "bb",
@@ -38,9 +38,9 @@ function! Test_multiline_subst()
   call assert_equal('7x7f', getline(12))
   call assert_equal('xxxxx', getline(13))
   enew!
-endfunction
+endfunc
 
-function! Test_substitute_variants()
+func Test_substitute_variants()
   " Validate that all the 2-/3-letter variants which embed the flags into the
   " command name actually work.
   enew!
@@ -51,10 +51,12 @@ function! Test_substitute_variants()
 	\ { 'cmd': ':s/t/r/cg', 'exp': 'Tesring srring', 'prompt': 'a' },
 	\ { 'cmd': ':s/t/r/ci', 'exp': 'resting string', 'prompt': 'y' },
 	\ { 'cmd': ':s/t/r/cI', 'exp': 'Tesring string', 'prompt': 'y' },
+	\ { 'cmd': ':s/t/r/c', 'exp': 'Testing string', 'prompt': 'n' },
 	\ { 'cmd': ':s/t/r/cn', 'exp': ln },
 	\ { 'cmd': ':s/t/r/cp', 'exp': 'Tesring string', 'prompt': 'y' },
 	\ { 'cmd': ':s/t/r/cl', 'exp': 'Tesring string', 'prompt': 'y' },
 	\ { 'cmd': ':s/t/r/gc', 'exp': 'Tesring srring', 'prompt': 'a' },
+	\ { 'cmd': ':s/i/I/gc', 'exp': 'TestIng string', 'prompt': 'l' },
 	\ { 'cmd': ':s/foo/bar/ge', 'exp': ln },
 	\ { 'cmd': ':s/t/r/g', 'exp': 'Tesring srring' },
 	\ { 'cmd': ':s/t/r/gi', 'exp': 'resring srring' },
@@ -86,6 +88,7 @@ function! Test_substitute_variants()
 	\ { 'cmd': ':s//r/rp', 'exp': 'Testr string' },
 	\ { 'cmd': ':s//r/rl', 'exp': 'Testr string' },
 	\ { 'cmd': ':s//r/r', 'exp': 'Testr string' },
+	\ { 'cmd': ':s/i/I/gc', 'exp': 'Testing string', 'prompt': 'q' },
 	\]
 
   for var in variants
@@ -105,7 +108,7 @@ function! Test_substitute_variants()
       call assert_equal(var.exp, getline('.'), msg)
     endfor
   endfor
-endfunction
+endfunc
 
 " Test the l, p, # flags.
 func Test_substitute_flags_lp()
@@ -137,7 +140,7 @@ func Test_substitute_repeat()
   " This caused an invalid memory access.
   split Xfile
   s/^/x
-  call feedkeys("Qsc\<CR>y", 'tx')
+  call feedkeys("gQsc\<CR>y", 'tx')
   bwipe!
 endfunc
 
@@ -248,9 +251,9 @@ func Test_sub_cmd_4()
 
   " List entry format: [input, cmd, output]
   let tests = [ ['aAa', "s/A/\\=substitute(submatch(0), '.', '\\', '')/",
-	      \ 			['a\a']],
+	      \				['a\a']],
 	      \ ['bBb', "s/B/\\=substitute(submatch(0), '.', '\\', '')/",
-	      \   			['b\b']],
+	      \				['b\b']],
 	      \ ['cCc', "s/C/\\=substitute(submatch(0), '.', '\<C-V>\<C-M>', '')/",
 	      \				["c\<C-V>", 'c']],
 	      \ ['dDd', "s/D/\\=substitute(submatch(0), '.', '\\\<C-V>\<C-M>', '')/",
@@ -384,6 +387,10 @@ func Test_substitute_join()
   call assert_equal(["foo\tbarbar\<C-H>foo"], getline(1, '$'))
   call assert_equal('\n', histget("search", -1))
 
+  call setline(1, ['foo', 'bar', 'baz', 'qux'])
+  call execute('1,2s/\n//')
+  call assert_equal(['foobarbaz', 'qux'], getline(1, '$'))
+
   bwipe!
 endfunc
 
@@ -397,6 +404,11 @@ func Test_substitute_count()
   \                 getline(1, '$'))
 
   call assert_fails('s/foo/bar/0', 'E939:')
+
+  call setline(1, ['foo foo', 'foo foo', 'foo foo', 'foo foo', 'foo foo'])
+  2,4s/foo/bar/ 10
+  call assert_equal(['foo foo', 'foo foo', 'foo foo', 'bar foo', 'bar foo'],
+        \           getline(1, '$'))
 
   bwipe!
 endfunc
@@ -416,6 +428,10 @@ func Test_substitute_flag_n()
   " No substitution should have been done.
   call assert_equal(lines, getline(1, '$'))
 
+  %delete _
+  call setline(1, ['A', 'Bar', 'Baz'])
+  call assert_equal("\n1 match on 1 line", execute('s/\nB\@=//gn'))
+
   bwipe!
 endfunc
 
@@ -426,6 +442,8 @@ func Test_substitute_errors()
   call assert_fails('s/FOO/bar/', 'E486:')
   call assert_fails('s/foo/bar/@', 'E488:')
   call assert_fails('s/\(/bar/', 'E476:')
+  call assert_fails('s afooabara', 'E146:')
+  call assert_fails('s\\a', 'E10:')
 
   setl nomodifiable
   call assert_fails('s/foo/bar/', 'E21:')
@@ -545,7 +563,7 @@ func Test_sub_replace_5()
 		\ substitute('A123456789',
 		\ 'A\(.\)\(.\)\(.\)\(.\)\(.\)\(.\)\(.\)\(.\)\(.\)',
 		\ '\=string([submatch(0, 1), submatch(9, 1), ' .
-		\ 'submatch(8, 1), submatch(7, 1), submatch(6, 1), ' .
+		\ 'submatch(8, 1), 7->submatch(1), submatch(6, 1), ' .
 		\ 'submatch(5, 1), submatch(4, 1), submatch(3, 1), ' .
 		\ 'submatch(2, 1), submatch(1, 1)])',
 		\ ''))
@@ -611,6 +629,25 @@ func Test_sub_replace_10()
    call assert_equal('aaa', substitute('123', '.\ze', 'a', 'g'))
    call assert_equal('aa2a3a', substitute('123', '1\|\ze', 'a', 'g'))
    call assert_equal('1aaa', substitute('123', '1\zs\|[23]', 'a', 'g'))
+endfunc
+
+func SubReplacer(text, submatches)
+  return a:text .. a:submatches[0] .. a:text
+endfunc
+func SubReplacer20(t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16, t17, t18, t19, submatches)
+  return a:t3 .. a:submatches[0] .. a:t11
+endfunc
+
+func Test_substitute_partial()
+  call assert_equal('1foo2foo3', substitute('123', '2', function('SubReplacer', ['foo']), 'g'))
+
+  " 19 arguments plus one is just OK
+  let Replacer = function('SubReplacer20', repeat(['foo'], 19))
+  call assert_equal('1foo2foo3', substitute('123', '2', Replacer, 'g'))
+
+  " 20 arguments plus one is too many
+  let Replacer = function('SubReplacer20', repeat(['foo'], 20))
+  call assert_fails("call substitute('123', '2', Replacer, 'g')", 'E118')
 endfunc
 
 func Test_sub_cmd_9()
@@ -727,3 +764,77 @@ func Test_sub_beyond_end()
   call assert_equal('#', getline(1))
   bwipe!
 endfunc
+
+" Test for repeating last substitution using :~ and :&r
+func Test_repeat_last_sub()
+  new
+  call setline(1, ['blue green yellow orange white'])
+  s/blue/red/
+  let @/ = 'yellow'
+  ~
+  let @/ = 'white'
+  :&r
+  let @/ = 'green'
+  s//gray
+  call assert_equal('red gray red orange red', getline(1))
+  close!
+endfunc
+
+" Test for Vi compatible substitution:
+"     \/{string}/, \?{string}? and \&{string}&
+func Test_sub_vi_compatibility()
+  new
+  call setline(1, ['blue green yellow orange blue'])
+  let @/ = 'orange'
+  s\/white/
+  let @/ = 'blue'
+  s\?amber?
+  let @/ = 'white'
+  s\&green&
+  call assert_equal('amber green yellow white green', getline(1))
+  close!
+endfunc
+
+" Test for substitute with the new text longer than the original text
+func Test_sub_expand_text()
+  new
+  call setline(1, 'abcabcabcabcabcabcabcabc')
+  s/b/\=repeat('B', 10)/g
+  call assert_equal(repeat('aBBBBBBBBBBc', 8), getline(1))
+  close!
+endfunc
+
+func Test_submatch_list_concatenate()
+  let pat = 'A\(.\)'
+  let Rep = {-> string([submatch(0, 1)] + [[submatch(1)]])}
+  call substitute('A1', pat, Rep, '')->assert_equal("[['A1'], ['1']]")
+endfunc
+
+func Test_substitute_skipped_range()
+  new
+  if 0
+    /1/5/2/2/\n
+  endif
+  call assert_equal([0, 1, 1, 0, 1], getcurpos())
+  bwipe!
+endfunc
+
+" This was using "old_sub" after it was freed.
+func Test_using_old_sub()
+  " set compatible maxfuncdepth=10
+  set maxfuncdepth=10
+  new
+  call setline(1, 'some text.')
+  func Repl()
+    ~
+    s/
+  endfunc
+  silent!  s/\%')/\=Repl()
+
+  delfunc Repl
+  bwipe!
+  set nocompatible
+endfunc
+
+
+" vim: shiftwidth=2 sts=2 expandtab

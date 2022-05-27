@@ -6,10 +6,8 @@ endif
 let s:loaded_pythonx_provider = 1
 
 function! provider#pythonx#Require(host) abort
-  let ver = (a:host.orig_name ==# 'python') ? 2 : 3
-
   " Python host arguments
-  let prog = (ver == '2' ?  provider#python#Prog() : provider#python3#Prog())
+  let prog = provider#python3#Prog()
   let args = [prog, '-c', 'import sys; sys.path = list(filter(lambda x: x != "", sys.path)); import neovim; neovim.start_host()']
 
 
@@ -19,18 +17,16 @@ function! provider#pythonx#Require(host) abort
     call add(args, plugin.path)
   endfor
 
-  return provider#Poll(args, a:host.orig_name, '$NVIM_PYTHON_LOG_FILE')
+  return provider#Poll(args, a:host.orig_name, '$NVIM_PYTHON_LOG_FILE', {'overlapped': v:true})
 endfunction
 
 function! s:get_python_executable_from_host_var(major_version) abort
-  return expand(get(g:, 'python'.(a:major_version == 3 ? '3' : '').'_host_prog', ''))
+  return expand(get(g:, 'python'.(a:major_version == 3 ? '3' : execute("throw 'unsupported'")).'_host_prog', ''), v:true)
 endfunction
 
 function! s:get_python_candidates(major_version) abort
   return {
-        \ 2: ['python2', 'python2.7', 'python2.6', 'python'],
-        \ 3: ['python3', 'python3.8', 'python3.7', 'python3.6', 'python3.5',
-        \     'python3.4', 'python3.3', 'python']
+        \ 3: ['python3', 'python3.10', 'python3.9', 'python3.8', 'python3.7', 'python']
         \ }[a:major_version]
 endfunction
 
@@ -44,7 +40,7 @@ function! provider#pythonx#DetectByModule(module, major_version) abort
   let python_exe = s:get_python_executable_from_host_var(a:major_version)
 
   if !empty(python_exe)
-    return [exepath(expand(python_exe)), '']
+    return [exepath(expand(python_exe, v:true)), '']
   endif
 
   let candidates = s:get_python_candidates(a:major_version)
@@ -60,7 +56,7 @@ function! provider#pythonx#DetectByModule(module, major_version) abort
   endfor
 
   " No suitable Python executable found.
-  return ['', 'provider/pythonx: Could not load Python '.a:major_version.":\n".join(errors, "\n")]
+  return ['', 'Could not load Python '.a:major_version.":\n".join(errors, "\n")]
 endfunction
 
 " Returns array: [prog_exitcode, prog_version]
@@ -82,7 +78,7 @@ function! provider#pythonx#CheckForModule(prog, module, major_version) abort
     return [0, a:prog . ' not found in search path or not executable.']
   endif
 
-  let min_version = (a:major_version == 2) ? '2.6' : '3.3'
+  let min_version = '3.7'
 
   " Try to load module, and output Python version.
   " Exit codes:
@@ -96,14 +92,14 @@ function! provider#pythonx#CheckForModule(prog, module, major_version) abort
     if prog_version !~ '^' . a:major_version
       return [0, prog_path . ' is Python ' . prog_version . ' and cannot provide Python '
             \ . a:major_version . '.']
-    elseif prog_version =~ '^' . a:major_version && prog_version < min_version
+    elseif prog_version =~ '^' . a:major_version && str2nr(prog_version[2:]) < str2nr(min_version[2:])
       return [0, prog_path . ' is Python ' . prog_version . ' and cannot provide Python >= '
             \ . min_version . '.']
     endif
   endif
 
   if prog_exitcode == 2
-    return [0, prog_path.' does not have the "' . a:module . '" module. :help provider-python']
+    return [0, prog_path.' does not have the "' . a:module . '" module.']
   elseif prog_exitcode == 127
     " This can happen with pyenv's shims.
     return [0, prog_path . ' does not exist: ' . prog_version]

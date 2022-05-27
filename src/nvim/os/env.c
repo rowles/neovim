@@ -6,41 +6,40 @@
 #include <assert.h>
 #include <uv.h>
 
-#include "nvim/vim.h"
 #include "nvim/ascii.h"
 #include "nvim/charset.h"
-#include "nvim/fileio.h"
-#include "nvim/os/os.h"
-#include "nvim/memory.h"
-#include "nvim/message.h"
-#include "nvim/path.h"
-#include "nvim/macros.h"
-#include "nvim/strings.h"
 #include "nvim/eval.h"
 #include "nvim/ex_getln.h"
-#include "nvim/version.h"
+#include "nvim/fileio.h"
+#include "nvim/macros.h"
 #include "nvim/map.h"
+#include "nvim/memory.h"
+#include "nvim/message.h"
+#include "nvim/os/os.h"
+#include "nvim/path.h"
+#include "nvim/strings.h"
+#include "nvim/version.h"
+#include "nvim/vim.h"
 
 #ifdef WIN32
-#include "nvim/mbyte.h"  // for utf8_to_utf16, utf16_to_utf8
+# include "nvim/mbyte.h"  // for utf8_to_utf16, utf16_to_utf8
 #endif
 
 #ifdef HAVE__NSGETENVIRON
-#include <crt_externs.h>
+# include <crt_externs.h>
 #endif
 
 #ifdef HAVE_SYS_UTSNAME_H
-#include <sys/utsname.h>
+# include <sys/utsname.h>
 #endif
 
 // Because `uv_os_getenv` requires allocating, we must manage a map to maintain
 // the behavior of `os_getenv`.
-static PMap(cstr_t) *envmap;
+static PMap(cstr_t) envmap = MAP_INIT;
 static uv_mutex_t mutex;
 
 void env_init(void)
 {
-  envmap = pmap_new(cstr_t)();
   uv_mutex_init(&mutex);
 }
 
@@ -66,8 +65,8 @@ const char *os_getenv(const char *name)
   }
   uv_mutex_lock(&mutex);
   int r = 0;
-  if (pmap_has(cstr_t)(envmap, name)
-      && !!(e = (char *)pmap_get(cstr_t)(envmap, name))) {
+  if (pmap_has(cstr_t)(&envmap, name)
+      && !!(e = (char *)pmap_get(cstr_t)(&envmap, name))) {
     if (e[0] != '\0') {
       // Found non-empty cached env var.
       // NOTE: This risks incoherence if an in-process library changes the
@@ -75,7 +74,7 @@ const char *os_getenv(const char *name)
       //       that turns out to be a problem, we can just remove this codepath.
       goto end;
     }
-    pmap_del2(envmap, name);
+    pmap_del2(&envmap, name);
   }
   e = xmalloc(size);
   r = uv_os_getenv(name, e, &size);
@@ -88,7 +87,7 @@ const char *os_getenv(const char *name)
     e = NULL;
     goto end;
   }
-  pmap_put(cstr_t)(envmap, xstrdup(name), e);
+  pmap_put(cstr_t)(&envmap, xstrdup(name), e);
 end:
   // Must do this before ELOG, log.c may call os_setenv.
   uv_mutex_unlock(&mutex);
@@ -157,7 +156,7 @@ int os_setenv(const char *name, const char *value, int overwrite)
   assert(r != UV_EINVAL);
   // Destroy the old map item. Do this AFTER uv_os_setenv(), because `value`
   // could be a previous os_getenv() result.
-  pmap_del2(envmap, name);
+  pmap_del2(&envmap, name);
   // Must do this before ELOG, log.c may call os_setenv.
   uv_mutex_unlock(&mutex);
   if (r != 0) {
@@ -174,7 +173,7 @@ int os_unsetenv(const char *name)
     return -1;
   }
   uv_mutex_lock(&mutex);
-  pmap_del2(envmap, name);
+  pmap_del2(&envmap, name);
   int r = uv_os_unsetenv(name);
   // Must do this before ELOG, log.c may call os_setenv.
   uv_mutex_unlock(&mutex);
@@ -184,59 +183,163 @@ int os_unsetenv(const char *name)
   return r == 0 ? 0 : -1;
 }
 
+/// Returns number of variables in the current environment variables block
+size_t os_get_fullenv_size(void)
+{
+  size_t len = 0;
+#ifdef _WIN32
+  wchar_t *envstrings = GetEnvironmentStringsW();
+  wchar_t *p = envstrings;
+  size_t l;
+  if (!envstrings) {
+    return len;
+  }
+  // GetEnvironmentStringsW() result has this format:
+  //    var1=value1\0var2=value2\0...varN=valueN\0\0
+  while ((l = wcslen(p)) != 0) {
+    p += l + 1;
+    len++;
+  }
+
+  FreeEnvironmentStringsW(envstrings);
+#else
+# if defined(HAVE__NSGETENVIRON)
+  char **environ = *_NSGetEnviron();
+# else
+  extern char **environ;
+# endif
+
+  while (environ[len] != NULL) {
+    len++;
+  }
+
+#endif
+  return len;
+}
+
+void os_free_fullenv(char **env)
+{
+  if (!env) {
+    return;
+  }
+  for (char **it = env; *it; it++) {
+    XFREE_CLEAR(*it);
+  }
+  xfree(env);
+}
+
+/// Copies the current environment variables into the given array, `env`.  Each
+/// array element is of the form "NAME=VALUE".
+/// Result must be freed by the caller.
+///
+/// @param[out]  env  array to populate with environment variables
+/// @param  env_size  size of `env`, @see os_fullenv_size
+void os_copy_fullenv(char **env, size_t env_size)
+{
+#ifdef _WIN32
+  wchar_t *envstrings = GetEnvironmentStringsW();
+  if (!envstrings) {
+    return;
+  }
+  wchar_t *p = envstrings;
+  size_t i = 0;
+  size_t l;
+  // GetEnvironmentStringsW() result has this format:
+  //    var1=value1\0var2=value2\0...varN=valueN\0\0
+  while ((l = wcslen(p)) != 0 && i < env_size) {
+    char *utf8_str;
+    int conversion_result = utf16_to_utf8(p, -1, &utf8_str);
+    if (conversion_result != 0) {
+      semsg("utf16_to_utf8 failed: %d", conversion_result);
+      break;
+    }
+    p += l + 1;
+
+    env[i] = utf8_str;
+    i++;
+  }
+
+  FreeEnvironmentStringsW(envstrings);
+#else
+# if defined(HAVE__NSGETENVIRON)
+  char **environ = *_NSGetEnviron();
+# else
+  extern char **environ;
+# endif
+
+  for (size_t i = 0; i < env_size && environ[i] != NULL; i++) {
+    env[i] = xstrdup(environ[i]);
+  }
+#endif
+}
+
+/// Copy value of the environment variable at `index` in the current
+/// environment variables block.
+/// Result must be freed by the caller.
+///
+/// @param index nth item in environment variables block
+/// @return [allocated] environment variable's value, or NULL
 char *os_getenvname_at_index(size_t index)
 {
 #ifdef _WIN32
-  wchar_t *env = GetEnvironmentStringsW();
-  if (!env) {
+  wchar_t *envstrings = GetEnvironmentStringsW();
+  if (!envstrings) {
     return NULL;
   }
+  wchar_t *p = envstrings;
   char *name = NULL;
-  size_t current_index = 0;
+  size_t i = 0;
+  size_t l;
   // GetEnvironmentStringsW() result has this format:
   //    var1=value1\0var2=value2\0...varN=valueN\0\0
-  for (wchar_t *it = env; *it != L'\0' || *(it + 1) != L'\0'; it++) {
-    if (index == current_index) {
+  while ((l = wcslen(p)) != 0 && i <= index) {
+    if (i == index) {
       char *utf8_str;
-      int conversion_result = utf16_to_utf8(it, -1, &utf8_str);
+      int conversion_result = utf16_to_utf8(p, -1, &utf8_str);
       if (conversion_result != 0) {
-        EMSG2("utf16_to_utf8 failed: %d", conversion_result);
+        semsg("utf16_to_utf8 failed: %d", conversion_result);
         break;
       }
-      size_t namesize = 0;
-      while (utf8_str[namesize] != '=' && utf8_str[namesize] != NUL) {
-        namesize++;
-      }
-      name = (char *)vim_strnsave((char_u *)utf8_str, namesize);
+
+      // Some Windows env vars start with =, so skip over that to find the
+      // separator between name/value
+      const char * const end = strchr(utf8_str + (utf8_str[0] == '=' ? 1 : 0),
+                                      '=');
+      assert(end != NULL);
+      ptrdiff_t len = end - utf8_str;
+      assert(len > 0);
+      name = xstrndup(utf8_str, (size_t)len);
       xfree(utf8_str);
       break;
     }
-    if (*it == L'\0') {
-      current_index++;
-    }
+
+    // Advance past the name and NUL
+    p += l + 1;
+    i++;
   }
 
-  FreeEnvironmentStringsW(env);
+  FreeEnvironmentStringsW(envstrings);
   return name;
 #else
 # if defined(HAVE__NSGETENVIRON)
   char **environ = *_NSGetEnviron();
 # else
-  extern char         **environ;
+  extern char **environ;
 # endif
-  // Check if index is inside the environ array and is not the last element.
+
+  // check if index is inside the environ array
   for (size_t i = 0; i <= index; i++) {
     if (environ[i] == NULL) {
       return NULL;
     }
   }
   char *str = environ[index];
-  size_t namesize = 0;
-  while (str[namesize] != '=' && str[namesize] != NUL) {
-    namesize++;
-  }
-  char *name = (char *)vim_strnsave((char_u *)str, namesize);
-  return name;
+  assert(str != NULL);
+  const char * const end = strchr(str, '=');
+  assert(end != NULL);
+  ptrdiff_t len = end - str;
+  assert(len > 0);
+  return xstrndup(str, (size_t)len);
 #endif
 }
 
@@ -272,7 +375,7 @@ void os_get_hostname(char *hostname, size_t size)
   if (GetComputerNameW(host_utf16, &host_wsize) == 0) {
     *hostname = '\0';
     DWORD err = GetLastError();
-    EMSG2("GetComputerNameW failed: %d", err);
+    semsg("GetComputerNameW failed: %d", err);
     return;
   }
   host_utf16[host_wsize] = '\0';
@@ -280,25 +383,33 @@ void os_get_hostname(char *hostname, size_t size)
   char *host_utf8;
   int conversion_result = utf16_to_utf8(host_utf16, -1, &host_utf8);
   if (conversion_result != 0) {
-    EMSG2("utf16_to_utf8 failed: %d", conversion_result);
+    semsg("utf16_to_utf8 failed: %d", conversion_result);
     return;
   }
   xstrlcpy(hostname, host_utf8, size);
   xfree(host_utf8);
 #else
-  EMSG("os_get_hostname failed: missing uname()");
+  emsg("os_get_hostname failed: missing uname()");
   *hostname = '\0';
 #endif
 }
 
 /// To get the "real" home directory:
-///   - get value of $HOME
+///   1. get value of $HOME
+///   2. if $HOME is not set, try the following
+/// For Windows:
+///   1. assemble homedir using HOMEDRIVE and HOMEPATH
+///   2. try os_homedir()
+///   3. resolve a direct reference to another system variable
+///   4. guess C drive
 /// For Unix:
-///   - go to that directory
-///   - do os_dirname() to get the real name of that directory.
-/// This also works with mounts and links.
-/// Don't do this for Windows, it will change the "current dir" for a drive.
+///   1. try os_homedir()
+///   2. go to that directory
+///     This also works with mounts and links.
+///     Don't do this for Windows, it will change the "current dir" for a drive.
+///   3. fall back to current working directory as a last resort
 static char *homedir = NULL;
+static char *os_homedir(void);
 
 void init_homedir(void)
 {
@@ -328,7 +439,7 @@ void init_homedir(void)
     }
   }
   if (var == NULL) {
-    var = os_getenv("USERPROFILE");
+    var = os_homedir();
   }
 
   // Weird but true: $HOME may contain an indirect reference to another
@@ -338,6 +449,7 @@ void init_homedir(void)
     const char *p = strchr(var + 1, '%');
     if (p != NULL) {
       vim_snprintf(os_buf, (size_t)(p - var), "%s", var + 1);
+      var = NULL;
       const char *exp = os_getenv(os_buf);
       if (exp != NULL && *exp != NUL
           && STRLEN(exp) + STRLEN(p) < MAXPATHL) {
@@ -356,8 +468,12 @@ void init_homedir(void)
   }
 #endif
 
-  if (var != NULL) {
 #ifdef UNIX
+  if (var == NULL) {
+    var = os_homedir();
+  }
+
+  if (var != NULL) {
     // Change to the directory and get the actual path.  This resolves
     // links.  Don't do it when we can't return.
     if (os_dirname((char_u *)os_buf, MAXPATHL) == OK && os_chdir(os_buf) == 0) {
@@ -365,12 +481,38 @@ void init_homedir(void)
         var = (char *)IObuff;
       }
       if (os_chdir(os_buf) != 0) {
-        EMSG(_(e_prev_dir));
+        emsg(_(e_prev_dir));
       }
     }
+  }
+
+  // Fall back to current working directory if home is not found
+  if ((var == NULL || *var == NUL)
+      && os_dirname((char_u *)os_buf, sizeof(os_buf)) == OK) {
+    var = os_buf;
+  }
 #endif
+  if (var != NULL) {
     homedir = xstrdup(var);
   }
+}
+
+static char homedir_buf[MAXPATHL];
+
+static char *os_homedir(void)
+{
+  homedir_buf[0] = NUL;
+  size_t homedir_size = MAXPATHL;
+  uv_mutex_lock(&mutex);
+  // http://docs.libuv.org/en/v1.x/misc.html#c.uv_os_homedir
+  int ret_value = uv_os_homedir(homedir_buf, &homedir_size);
+  uv_mutex_unlock(&mutex);
+  if (ret_value == 0 && homedir_size < MAXPATHL) {
+    return homedir_buf;
+  }
+  ELOG("uv_os_homedir() failed %d: %s", ret_value, os_strerror(ret_value));
+  homedir_buf[0] = NUL;
+  return NULL;
 }
 
 #if defined(EXITFREE)
@@ -387,9 +529,9 @@ void free_homedir(void)
 /// again soon.
 /// @param src String containing environment variables to expand
 /// @see {expand_env}
-char_u *expand_env_save(char_u *src)
+char *expand_env_save(char *src)
 {
-  return expand_env_save_opt(src, false);
+  return (char *)expand_env_save_opt((char_u *)src, false);
 }
 
 /// Similar to expand_env_save() but when "one" is `true` handle the string as
@@ -426,30 +568,26 @@ void expand_env(char_u *src, char_u *dst, int dstlen)
 /// @param esc        Escape spaces in expanded variables
 /// @param one        `srcp` is a single filename
 /// @param prefix     Start again after this (can be NULL)
-void expand_env_esc(char_u *restrict srcp,
-                    char_u *restrict dst,
-                    int dstlen,
-                    bool esc,
-                    bool one,
+void expand_env_esc(char_u *restrict srcp, char_u *restrict dst, int dstlen, bool esc, bool one,
                     char_u *prefix)
   FUNC_ATTR_NONNULL_ARG(1, 2)
 {
-  char_u      *tail;
-  char_u      *var;
+  char_u *tail;
+  char_u *var;
   bool copy_char;
   bool mustfree;  // var was allocated, need to free it later
   bool at_start = true;  // at start of a name
 
   int prefix_len = (prefix == NULL) ? 0 : (int)STRLEN(prefix);
 
-  char_u *src = skipwhite(srcp);
+  char_u *src = (char_u *)skipwhite((char *)srcp);
   dstlen--;  // leave one char space for "\,"
   while (*src && dstlen > 0) {
     // Skip over `=expr`.
     if (src[0] == '`' && src[1] == '=') {
       var = src;
       src += 2;
-      (void)skip_expr(&src);
+      (void)skip_expr((char **)&src);
       if (*src == '`') {
         src++;
       }
@@ -481,7 +619,7 @@ void expand_env_esc(char_u *restrict srcp,
           while (c-- > 0 && *tail != NUL && *tail != '}') {
             *var++ = *tail++;
           }
-        } else // NOLINT
+        } else  // NOLINT
 #endif
         {
           while (c-- > 0 && *tail != NUL && vim_isIDc(*tail)) {
@@ -502,11 +640,11 @@ void expand_env_esc(char_u *restrict srcp,
         var = (char_u *)vim_getenv((char *)dst);
         mustfree = true;
 #if defined(UNIX)
-        }
+      }
 #endif
       } else if (src[1] == NUL  // home directory
                  || vim_ispathsep(src[1])
-                 || vim_strchr((char_u *)" ,\t\n", src[1]) != NULL) {
+                 || vim_strchr(" ,\t\n", src[1]) != NULL) {
         var = (char_u *)homedir;
         tail = src + 1;
       } else {  // user directory
@@ -533,7 +671,7 @@ void expand_env_esc(char_u *restrict srcp,
           ExpandInit(&xpc);
           xpc.xp_context = EXPAND_FILES;
           var = ExpandOne(&xpc, dst, NULL,
-              WILD_ADD_SLASH|WILD_SILENT, WILD_EXPAND_FREE);
+                          WILD_ADD_SLASH|WILD_SILENT, WILD_EXPAND_FREE);
           mustfree = true;
         }
 #else
@@ -547,7 +685,7 @@ void expand_env_esc(char_u *restrict srcp,
       // If 'shellslash' is set change backslashes to forward slashes.
       // Can't use slash_adjust(), p_ssl may be set temporarily.
       if (p_ssl && var != NULL && vim_strchr(var, '\\') != NULL) {
-        char_u  *p = vim_strsave(var);
+        char_u *p = vim_strsave(var);
 
         if (mustfree) {
           xfree(var);
@@ -560,8 +698,8 @@ void expand_env_esc(char_u *restrict srcp,
 
       // If "var" contains white space, escape it with a backslash.
       // Required for ":e ~/tt" when $HOME includes a space.
-      if (esc && var != NULL && vim_strpbrk(var, (char_u *)" \t") != NULL) {
-        char_u  *p = vim_strsave_escaped(var, (char_u *)" \t");
+      if (esc && var != NULL && strpbrk((char *)var, " \t") != NULL) {
+        char_u *p = vim_strsave_escaped(var, (char_u *)" \t");
 
         if (mustfree) {
           xfree(var);
@@ -577,12 +715,13 @@ void expand_env_esc(char_u *restrict srcp,
         int c = (int)STRLEN(var);
         // if var[] ends in a path separator and tail[] starts
         // with it, skip a character
-        if (*var != NUL && after_pathsep((char *)dst, (char *)dst + c)
+        if (after_pathsep((char *)dst, (char *)dst + c)
 #if defined(BACKSLASH_IN_FILENAME)
             && dst[-1] != ':'
 #endif
-            && vim_ispathsep(*tail))
-          ++tail;
+            && vim_ispathsep(*tail)) {
+          tail++;
+        }
         dst += c;
         src = tail;
         copy_char = false;
@@ -599,7 +738,7 @@ void expand_env_esc(char_u *restrict srcp,
       at_start = false;
       if (src[0] == '\\' && src[1] != NUL) {
         *dst++ = *src++;
-        --dstlen;
+        dstlen--;
       } else if ((src[0] == ' ' || src[0] == ',') && !one) {
         at_start = true;
       }
@@ -666,7 +805,7 @@ static char *remove_tail(char *path, char *pend, char *dirname)
   char *new_tail = pend - len - 1;
 
   if (new_tail >= path
-      && fnamencmp((char_u *)new_tail, (char_u *)dirname, len) == 0
+      && FNAMENCMP((char_u *)new_tail, (char_u *)dirname, len) == 0
       && (new_tail == path || after_pathsep(path, new_tail))) {
     return new_tail;
   }
@@ -686,14 +825,11 @@ static char *remove_tail(char *path, char *pend, char *dirname)
 /// @param[out]  len   Location where current directory length should be saved.
 ///
 /// @return Next iter argument value or NULL when iteration should stop.
-const void *vim_env_iter(const char delim,
-                         const char *const val,
-                         const void *const iter,
-                         const char **const dir,
-                         size_t *const len)
+const void *vim_env_iter(const char delim, const char *const val, const void *const iter,
+                         const char **const dir, size_t *const len)
   FUNC_ATTR_NONNULL_ARG(2, 4, 5) FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  const char *varval = (const char *) iter;
+  const char *varval = (const char *)iter;
   if (varval == NULL) {
     varval = val;
   }
@@ -703,7 +839,7 @@ const void *vim_env_iter(const char delim,
     *len = strlen(varval);
     return NULL;
   } else {
-    *len = (size_t) (dirend - varval);
+    *len = (size_t)(dirend - varval);
     return dirend + 1;
   }
 }
@@ -721,14 +857,11 @@ const void *vim_env_iter(const char delim,
 /// @param[out]  len   Location where current directory length should be saved.
 ///
 /// @return Next iter argument value or NULL when iteration should stop.
-const void *vim_env_iter_rev(const char delim,
-                             const char *const val,
-                             const void *const iter,
-                             const char **const dir,
-                             size_t *const len)
+const void *vim_env_iter_rev(const char delim, const char *const val, const void *const iter,
+                             const char **const dir, size_t *const len)
   FUNC_ATTR_NONNULL_ARG(2, 4, 5) FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  const char *varend = (const char *) iter;
+  const char *varend = (const char *)iter;
   if (varend == NULL) {
     varend = val + strlen(val) - 1;
   }
@@ -740,9 +873,21 @@ const void *vim_env_iter_rev(const char delim,
     return NULL;
   } else {
     *dir = colon + 1;
-    *len = (size_t) (varend - colon);
+    *len = (size_t)(varend - colon);
     return colon - 1;
   }
+}
+
+/// @param[out] exe_name should be at least MAXPATHL in size
+void vim_get_prefix_from_exepath(char *exe_name)
+{
+  // TODO(bfredl): param could have been written as "char exe_name[MAXPATHL]"
+  // but c_grammar.lua does not recognize it (yet).
+  xstrlcpy(exe_name, get_vim_var_str(VV_PROGPATH), MAXPATHL * sizeof(*exe_name));
+  char *path_end = (char *)path_tail_with_sep((char_u *)exe_name);
+  *path_end = '\0';  // remove the trailing "nvim.exe"
+  path_end = path_tail(exe_name);
+  *path_end = '\0';  // remove the trailing "bin/"
 }
 
 /// Vim getenv() wrapper with special handling of $HOME, $VIM, $VIMRUNTIME,
@@ -793,30 +938,24 @@ char *vim_getenv(const char *name)
   // - the directory name from 'helpfile' (unless it contains '$')
   // - the executable name from argv[0]
   if (vim_path == NULL) {
-    if (p_hf != NULL && vim_strchr(p_hf, '$') == NULL) {
+    if (p_hf != NULL && vim_strchr((char *)p_hf, '$') == NULL) {
       vim_path = (char *)p_hf;
     }
 
     char exe_name[MAXPATHL];
     // Find runtime path relative to the nvim binary: ../share/nvim/runtime
     if (vim_path == NULL) {
-      xstrlcpy(exe_name, (char *)get_vim_var_str(VV_PROGPATH),
-               sizeof(exe_name));
-      char *path_end = (char *)path_tail_with_sep((char_u *)exe_name);
-      *path_end = '\0';  // remove the trailing "nvim.exe"
-      path_end = (char *)path_tail((char_u *)exe_name);
-      *path_end = '\0';  // remove the trailing "bin/"
-      if (append_path(
-          exe_name,
-          "share" _PATHSEPSTR "nvim" _PATHSEPSTR "runtime" _PATHSEPSTR,
-          MAXPATHL) == OK) {
+      vim_get_prefix_from_exepath(exe_name);
+      if (append_path(exe_name,
+                      "share" _PATHSEPSTR "nvim" _PATHSEPSTR "runtime" _PATHSEPSTR,
+                      MAXPATHL) == OK) {
         vim_path = exe_name;  // -V507
       }
     }
 
     if (vim_path != NULL) {
       // remove the file name
-      char *vim_path_end = (char *)path_tail((char_u *)vim_path);
+      char *vim_path_end = path_tail(vim_path);
 
       // remove "doc/" from 'helpfile', if present
       if (vim_path == (char *)p_hf) {
@@ -894,8 +1033,8 @@ char *vim_getenv(const char *name)
 ///                  a list of them.
 ///
 /// @return length of the string put into dst, does not include NUL byte.
-size_t home_replace(const buf_T *const buf, const char_u *src,
-                    char_u *const dst, size_t dstlen, const bool one)
+size_t home_replace(const buf_T *const buf, const char_u *src, char_u *const dst, size_t dstlen,
+                    const bool one)
   FUNC_ATTR_NONNULL_ARG(3)
 {
   size_t dirlen = 0;
@@ -907,7 +1046,7 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
   }
 
   if (buf != NULL && buf->b_help) {
-    const size_t dlen = xstrlcpy((char *)dst, (char *)path_tail(src), dstlen);
+    const size_t dlen = STRLCPY(dst, path_tail((char *)src), dstlen);
     return MIN(dlen, dstlen - 1);
   }
 
@@ -931,8 +1070,8 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
     size_t usedlen = 0;
     size_t flen = strlen(homedir_env_mod);
     char_u *fbuf = NULL;
-    (void)modify_fname((char_u *)":p", false, &usedlen,
-                       (char_u **)&homedir_env_mod, &fbuf, &flen);
+    (void)modify_fname(":p", false, &usedlen,
+                       &homedir_env_mod, (char **)&fbuf, &flen);
     flen = strlen(homedir_env_mod);
     assert(homedir_env_mod != homedir_env);
     if (vim_ispathsep(homedir_env_mod[flen - 1])) {
@@ -946,7 +1085,7 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
   }
 
   if (!one) {
-    src = skipwhite(src);
+    src = (char_u *)skipwhite((char *)src);
   }
   char *dst_p = (char *)dst;
   while (*src && dstlen > 0) {
@@ -961,7 +1100,7 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
     size_t len = dirlen;
     for (;;) {
       if (len
-          && fnamencmp(src, (char_u *)p, len) == 0
+          && FNAMENCMP(src, (char_u *)p, len) == 0
           && (vim_ispathsep(src[len])
               || (!one && (src[len] == ',' || src[len] == ' '))
               || src[len] == NUL)) {
@@ -970,10 +1109,9 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
           *dst_p++ = '~';
         }
 
-        // If it's just the home directory, add  "/".
-        if (!vim_ispathsep(src[0]) && --dstlen > 0) {
-          *dst_p++ = '/';
-        }
+        // Do not add directory separator into dst, because dst is
+        // expected to just return the directory name without the
+        // directory separator '/'.
         break;
       }
       if (p == homedir_env_mod) {
@@ -1005,7 +1143,7 @@ size_t home_replace(const buf_T *const buf, const char_u *src,
 /// Like home_replace, store the replaced string in allocated memory.
 /// @param buf When not NULL, check for help files
 /// @param src Input file name
-char_u * home_replace_save(buf_T *buf, char_u *src) FUNC_ATTR_NONNULL_RET
+char_u *home_replace_save(buf_T *buf, char_u *src) FUNC_ATTR_NONNULL_RET
 {
   size_t len = 3;             // space for "~/" and trailing NUL
   if (src != NULL) {          // just in case
@@ -1016,11 +1154,10 @@ char_u * home_replace_save(buf_T *buf, char_u *src) FUNC_ATTR_NONNULL_RET
   return dst;
 }
 
-
 /// Function given to ExpandGeneric() to obtain an environment variable name.
-char_u *get_env_name(expand_T *xp, int idx)
+char *get_env_name(expand_T *xp, int idx)
 {
-# define ENVNAMELEN 100
+#define ENVNAMELEN 100
   // this static buffer is needed to avoid a memory leak in ExpandGeneric
   static char_u name[ENVNAMELEN];
   assert(idx >= 0);
@@ -1028,7 +1165,7 @@ char_u *get_env_name(expand_T *xp, int idx)
   if (envname) {
     STRLCPY(name, envname, ENVNAMELEN);
     xfree(envname);
-    return name;
+    return (char *)name;
   }
   return NULL;
 }
@@ -1065,7 +1202,9 @@ bool os_setenv_append_path(const char *fname)
       temp[0] = NUL;
     } else {
       xstrlcpy(temp, path, newlen);
-      xstrlcat(temp, ENV_SEPSTR, newlen);
+      if (ENV_SEPCHAR != path[pathlen - 1]) {
+        xstrlcat(temp, ENV_SEPSTR, newlen);
+      }
     }
     xstrlcat(temp, os_buf, newlen);
     os_setenv("PATH", temp, 1);
@@ -1084,10 +1223,10 @@ bool os_shell_is_cmdexe(const char *sh)
   }
   if (striequal(sh, "$COMSPEC")) {
     const char *comspec = os_getenv("COMSPEC");
-    return striequal("cmd.exe", (char *)path_tail((char_u *)comspec));
+    return striequal("cmd.exe", path_tail(comspec));
   }
   if (striequal(sh, "cmd.exe") || striequal(sh, "cmd")) {
     return true;
   }
-  return striequal("cmd.exe", (char *)path_tail((char_u *)sh));
+  return striequal("cmd.exe", path_tail(sh));
 }

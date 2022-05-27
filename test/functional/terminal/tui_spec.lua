@@ -8,12 +8,12 @@ local helpers = require('test.functional.helpers')(after_each)
 local uname = helpers.uname
 local thelpers = require('test.functional.terminal.helpers')
 local Screen = require('test.functional.ui.screen')
+local assert_alive = helpers.assert_alive
 local eq = helpers.eq
 local feed_command = helpers.feed_command
 local feed_data = thelpers.feed_data
 local clear = helpers.clear
 local command = helpers.command
-local eval = helpers.eval
 local nvim_dir = helpers.nvim_dir
 local retry = helpers.retry
 local nvim_prog = helpers.nvim_prog
@@ -82,7 +82,7 @@ describe('TUI', function()
     command('call jobresize(b:terminal_job_id, 1, 4)')
     screen:try_resize(57, 17)
     command('call jobresize(b:terminal_job_id, 57, 17)')
-    eq(2, eval("1+1"))  -- Still alive?
+    assert_alive()
   end)
 
   it('accepts resize while pager is active', function()
@@ -214,12 +214,44 @@ describe('TUI', function()
     ]])
   end)
 
-  it('interprets ESC+key as ALT chord', function()
+  it('interprets ESC+key as ALT chord in i_CTRL-V', function()
     -- Vim represents ALT/META by setting the "high bit" of the modified key:
     -- ALT+j inserts "ê". Nvim does not (#3982).
     feed_data('i\022\027j')
     screen:expect([[
       <M-j>{1: }                                            |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+      {3:-- INSERT --}                                      |
+      {3:-- TERMINAL --}                                    |
+    ]])
+  end)
+
+  it('interprets <Esc>[27u as <Esc>', function()
+    feed_command('nnoremap <M-;> <Nop>')
+    feed_command('nnoremap <Esc> AESC<Esc>')
+    feed_command('nnoremap ; Asemicolon<Esc>')
+    feed_data('\027[27u;')
+    screen:expect([[
+      ESCsemicolo{1:n}                                      |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+                                                        |
+      {3:-- TERMINAL --}                                    |
+    ]])
+    -- <Esc>; should be recognized as <M-;> when <M-;> is mapped
+    feed_data('\027;')
+    screen:expect_unchanged()
+  end)
+
+  it('interprets <Esc><Nul> as <M-C-Space> #17198', function()
+    feed_data('i\022\027\000')
+    screen:expect([[
+      <M-C-Space>{1: }                                      |
       {4:~                                                 }|
       {4:~                                                 }|
       {4:~                                                 }|
@@ -271,7 +303,7 @@ describe('TUI', function()
       {3:-- TERMINAL --}                                    |
     ]])
     feed_data('\027[201~')  -- End paste.
-    feed_data('\027\000')   -- ESC: go to Normal mode.
+    feed_data('\027[27u')   -- ESC: go to Normal mode.
     wait_for_mode('n')
     screen:expect([[
       "pasted from termina{1:l}"                            |
@@ -299,6 +331,8 @@ describe('TUI', function()
     feed_data('u')
     expect_child_buf_lines({'"pasted from terminal"'})
     feed_data('u')
+    expect_child_buf_lines({'""'})
+    feed_data('u')
     expect_child_buf_lines({''})
   end)
 
@@ -321,7 +355,7 @@ describe('TUI', function()
     feed_data('just paste it™')
     feed_data('\027[201~')
     screen:expect{grid=[[
-      thisjust paste it™{1:3} is here                       |
+      thisjust paste it{1:™}3 is here                       |
                                                         |
       {4:~                                                 }|
       {4:~                                                 }|
@@ -346,6 +380,10 @@ describe('TUI', function()
   end)
 
   it('paste: terminal mode', function()
+    if os.getenv('GITHUB_ACTIONS') ~= nil then
+        pending("tty-test complains about not owning the terminal -- actions/runner#241")
+        return
+    end
     feed_data(':set statusline=^^^^^^^\n')
     feed_data(':terminal '..nvim_dir..'/tty-test\n')
     feed_data('i')
@@ -373,7 +411,7 @@ describe('TUI', function()
   end)
 
   it('paste: normal-mode (+CRLF #10872)', function()
-    feed_data(':set ruler')
+    feed_data(':set ruler | echo')
     wait_for_mode('c')
     feed_data('\n')
     wait_for_mode('n')
@@ -417,13 +455,13 @@ describe('TUI', function()
     expect_child_buf_lines(expected_crlf)
     feed_data('u')
     expect_child_buf_lines({''})
+    feed_data(':echo')
+    wait_for_mode('c')
+    feed_data('\n')
+    wait_for_mode('n')
     -- CRLF input
     feed_data('\027[200~'..table.concat(expected_lf,'\r\n')..'\027[201~')
-    screen:expect{
-      grid=expected_grid1:gsub(
-        ':set ruler *',
-        '3 fewer lines; before #1  0 seconds ago           '),
-      attr_ids=expected_attr}
+    screen:expect{grid=expected_grid1, attr_ids=expected_attr}
     expect_child_buf_lines(expected_crlf)
   end)
 
@@ -447,7 +485,7 @@ describe('TUI', function()
       {3:-- TERMINAL --}                                    |
     ]]}
     -- Dot-repeat/redo.
-    feed_data('\027\000')
+    feed_data('\027[27u')
     wait_for_mode('n')
     feed_data('.')
     screen:expect{grid=[[
@@ -488,10 +526,12 @@ describe('TUI', function()
   it('paste: recovers from vim.paste() failure', function()
     child_session:request('nvim_exec_lua', [[
       _G.save_paste_fn = vim.paste
+      -- Stack traces for this test are non-deterministic, so disable them
+      _G.debug.traceback = function(msg) return msg end
       vim.paste = function(lines, phase) error("fake fail") end
     ]], {})
     -- Prepare something for dot-repeat/redo.
-    feed_data('ifoo\n\027\000')
+    feed_data('ifoo\n\027[27u')
     wait_for_mode('n')
     screen:expect{grid=[[
       foo                                               |
@@ -508,7 +548,7 @@ describe('TUI', function()
       foo                                               |
                                                         |
       {5:                                                  }|
-      {8:paste: Error executing lua: [string "<nvim>"]:2: f}|
+      {8:paste: Error executing lua: [string "<nvim>"]:4: f}|
       {8:ake fail}                                          |
       {10:Press ENTER or type command to continue}{1: }          |
       {3:-- TERMINAL --}                                    |
@@ -533,7 +573,7 @@ describe('TUI', function()
       {3:-- TERMINAL --}                                    |
     ]]}
     -- Editor should still work after failed/drained paste.
-    feed_data('ityped input...\027\000')
+    feed_data('ityped input...\027[27u')
     screen:expect{grid=[[
       foo                                               |
       foo                                               |
@@ -567,19 +607,23 @@ describe('TUI', function()
       vim.paste = function(lines, phase) return false end
     ]], {})
     feed_data('\027[200~line A\nline B\n\027[201~')
-    feed_data('ifoo\n\027\000')
+    feed_data('ifoo\n\027[27u')
     expect_child_buf_lines({'foo',''})
   end)
 
   it("paste: 'nomodifiable' buffer", function()
     child_session:request('nvim_command', 'set nomodifiable')
+    child_session:request('nvim_exec_lua', [[
+      -- Truncate the error message to hide the line number
+      _G.debug.traceback = function(msg) return msg:sub(-49) end
+    ]], {})
     feed_data('\027[200~fail 1\nfail 2\n\027[201~')
     screen:expect{grid=[[
                                                         |
       {4:~                                                 }|
       {5:                                                  }|
-      {MATCH:paste: Error executing lua: vim.lua:%d+: Vim:E21: }|
-      {8:Cannot make changes, 'modifiable' is off}          |
+      {8:paste: Error executing lua: Vim:E21: Cannot make c}|
+      {8:hanges, 'modifiable' is off}                       |
       {10:Press ENTER or type command to continue}{1: }          |
       {3:-- TERMINAL --}                                    |
     ]]}
@@ -603,6 +647,8 @@ describe('TUI', function()
     wait_for_mode('i')
     -- "bracketed paste"
     feed_data('\027[200~'..expected..'\027[201~')
+    -- FIXME: Data race between the two feeds
+    if uname() == 'freebsd' then screen:sleep(1) end
     feed_data(' end')
     expected = expected..' end'
     screen:expect([[
@@ -655,7 +701,7 @@ describe('TUI', function()
       {3:-- INSERT --}                                      |
       {3:-- TERMINAL --}                                    |
     ]])
-    feed_data('\027\000')  -- ESC: go to Normal mode.
+    feed_data('\027[27u')  -- ESC: go to Normal mode.
     wait_for_mode('n')
     -- Dot-repeat/redo.
     feed_data('.')
@@ -719,6 +765,76 @@ describe('TUI', function()
     ]])
   end)
 
+  it('paste: split "start paste" code', function()
+    feed_data('i')
+    -- Send split "start paste" sequence.
+    feed_data('\027[2')
+    feed_data('00~pasted from terminal\027[201~')
+    screen:expect([[
+      pasted from terminal{1: }                             |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+      {3:-- INSERT --}                                      |
+      {3:-- TERMINAL --}                                    |
+    ]])
+  end)
+
+  it('paste: split "stop paste" code', function()
+    feed_data('i')
+    -- Send split "stop paste" sequence.
+    feed_data('\027[200~pasted from terminal\027[20')
+    feed_data('1~')
+    screen:expect([[
+      pasted from terminal{1: }                             |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+      {3:-- INSERT --}                                      |
+      {3:-- TERMINAL --}                                    |
+    ]])
+  end)
+
+  it('paste: streamed paste with isolated "stop paste" code', function()
+    child_session:request('nvim_exec_lua', [[
+      _G.paste_phases = {}
+      vim.paste = (function(overridden)
+        return function(lines, phase)
+          table.insert(_G.paste_phases, phase)
+          overridden(lines, phase)
+        end
+      end)(vim.paste)
+    ]], {})
+    feed_data('i')
+    feed_data('\027[200~pasted')  -- phase 1
+    screen:expect([[
+      pasted{1: }                                           |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+      {3:-- INSERT --}                                      |
+      {3:-- TERMINAL --}                                    |
+    ]])
+    feed_data(' from terminal')  -- phase 2
+    screen:expect([[
+      pasted from terminal{1: }                             |
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {4:~                                                 }|
+      {5:[No Name] [+]                                     }|
+      {3:-- INSERT --}                                      |
+      {3:-- TERMINAL --}                                    |
+    ]])
+    -- Send isolated "stop paste" sequence.
+    feed_data('\027[201~')  -- phase 3
+    screen:expect_unchanged()
+    local _, rv = child_session:request('nvim_exec_lua', [[return _G.paste_phases]], {})
+    eq({1, 2, 3}, rv)
+  end)
+
   it('allows termguicolors to be set at runtime', function()
     screen:set_option('rgb', true)
     screen:set_default_attr_ids({
@@ -772,6 +888,10 @@ describe('TUI', function()
   end)
 
   it('forwards :term palette colors with termguicolors', function()
+    if os.getenv('GITHUB_ACTIONS') ~= nil then
+        pending("tty-test complains about not owning the terminal -- actions/runner#241")
+        return
+    end
     screen:set_rgb_cterm(true)
     screen:set_default_attr_ids({
       [1] = {{reverse = true}, {reverse = true}},
@@ -1433,22 +1553,29 @@ describe("TUI", function()
 
     retry(nil, 3000, function()  -- Wait for log file to be flushed.
       local log = read_file('Xtest_tui_verbose_log') or ''
-      eq('--- Terminal info --- {{{\n', string.match(log, '--- Terminal.-\n'))
+      eq('--- Terminal info --- {{{\n', string.match(log, '%-%-%- Terminal.-\n'))
       ok(#log > 50)
     end)
   end)
 
 end)
 
-it('TUI bg color triggers OptionSet event on terminal-response', function()
-  -- Only single integration test.
-  -- See test/unit/tui_spec.lua for unit tests.
-  clear()
-  local screen = thelpers.screen_setup(0, '["'..nvim_prog
-    ..'", "-u", "NONE", "-i", "NONE", "--cmd", "set noswapfile", '
-    ..'"-c", "autocmd OptionSet background echo \\"did OptionSet, yay!\\""]')
+describe('TUI bg color', function()
+  local screen
 
-  screen:expect([[
+  local function setup()
+    -- Only single integration test.
+    -- See test/unit/tui_spec.lua for unit tests.
+    clear()
+    screen = thelpers.screen_setup(0, '["'..nvim_prog
+      ..'", "-u", "NONE", "-i", "NONE", "--cmd", "set noswapfile", '
+      ..'"-c", "autocmd OptionSet background echo \\"did OptionSet, yay!\\""]')
+  end
+
+  before_each(setup)
+
+  it('triggers OptionSet event on unsplit terminal-response', function()
+    screen:expect([[
     {1: }                                                 |
     {4:~                                                 }|
     {4:~                                                 }|
@@ -1456,10 +1583,97 @@ it('TUI bg color triggers OptionSet event on terminal-response', function()
     {5:[No Name]                       0,0-1          All}|
                                                       |
     {3:-- TERMINAL --}                                    |
-  ]])
-  feed_data('\027]11;rgb:ffff/ffff/ffff\007')
-  screen:expect{any='did OptionSet, yay!'}
+    ]])
+    feed_data('\027]11;rgb:ffff/ffff/ffff\007')
+    screen:expect{any='did OptionSet, yay!'}
 
-  feed_data(':echo "new_bg=".&background\n')
-  screen:expect{any='new_bg=light'}
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=light'}
+
+    setup()
+    screen:expect([[
+    {1: }                                                 |
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {5:[No Name]                       0,0-1          All}|
+                                                      |
+    {3:-- TERMINAL --}                                    |
+    ]])
+    feed_data('\027]11;rgba:ffff/ffff/ffff/8000\027\\')
+    screen:expect{any='did OptionSet, yay!'}
+
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=light'}
+  end)
+
+  it('triggers OptionSet event with split terminal-response', function()
+    screen:expect([[
+    {1: }                                                 |
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {5:[No Name]                       0,0-1          All}|
+                                                      |
+    {3:-- TERMINAL --}                                    |
+    ]])
+    -- Send a background response with the OSC command part split.
+    feed_data('\027]11;rgb')
+    feed_data(':ffff/ffff/ffff\027\\')
+    screen:expect{any='did OptionSet, yay!'}
+
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=light'}
+
+    setup()
+    screen:expect([[
+    {1: }                                                 |
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {5:[No Name]                       0,0-1          All}|
+                                                      |
+    {3:-- TERMINAL --}                                    |
+    ]])
+    -- Send a background response with the Pt portion split.
+    feed_data('\027]11;rgba:ffff/fff')
+    feed_data('f/ffff/8000\007')
+    screen:expect{any='did OptionSet, yay!'}
+
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=light'}
+  end)
+
+  it('not triggers OptionSet event with invalid terminal-response', function()
+    screen:expect([[
+    {1: }                                                 |
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {5:[No Name]                       0,0-1          All}|
+                                                      |
+    {3:-- TERMINAL --}                                    |
+    ]])
+    feed_data('\027]11;rgb:ffff/ffff/ffff/8000\027\\')
+    screen:expect_unchanged()
+
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=dark'}
+
+    setup()
+    screen:expect([[
+    {1: }                                                 |
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {4:~                                                 }|
+    {5:[No Name]                       0,0-1          All}|
+                                                      |
+    {3:-- TERMINAL --}                                    |
+    ]])
+    feed_data('\027]11;rgba:ffff/foo/ffff/8000\007')
+    screen:expect_unchanged()
+
+    feed_data(':echo "new_bg=".&background\n')
+    screen:expect{any='new_bg=dark'}
+  end)
 end)

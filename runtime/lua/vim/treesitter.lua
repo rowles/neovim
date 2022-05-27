@@ -1,73 +1,121 @@
 local a = vim.api
+local query = require('vim.treesitter.query')
+local language = require('vim.treesitter.language')
+local LanguageTree = require('vim.treesitter.languagetree')
 
 -- TODO(bfredl): currently we retain parsers for the lifetime of the buffer.
 -- Consider use weak references to release parser if all plugins are done with
 -- it.
 local parsers = {}
 
-local Parser = {}
-Parser.__index = Parser
+local M = vim.tbl_extend('error', query, language)
 
-function Parser:parse()
-  if self.valid then
-    return self.tree
-  end
-  self.tree = self._parser:parse_buf(self.bufnr)
-  self.valid = true
-  return self.tree
-end
+M.language_version = vim._ts_get_language_version()
+M.minimum_language_version = vim._ts_get_minimum_language_version()
 
-function Parser:_on_lines(bufnr, _, start_row, old_stop_row, stop_row, old_byte_size)
-  local start_byte = a.nvim_buf_get_offset(bufnr,start_row)
-  local stop_byte = a.nvim_buf_get_offset(bufnr,stop_row)
-  local old_stop_byte = start_byte + old_byte_size
-  self._parser:edit(start_byte,old_stop_byte,stop_byte,
-                    start_row,0,old_stop_row,0,stop_row,0)
-  self.valid = false
-end
+setmetatable(M, {
+  __index = function(t, k)
+    if k == 'highlighter' then
+      t[k] = require('vim.treesitter.highlighter')
+      return t[k]
+    elseif k == 'language' then
+      t[k] = require('vim.treesitter.language')
+      return t[k]
+    elseif k == 'query' then
+      t[k] = require('vim.treesitter.query')
+      return t[k]
+    end
+  end,
+})
 
-local module = {
-  add_language=vim._ts_add_language,
-  inspect_language=vim._ts_inspect_language,
-}
-
-function module.create_parser(bufnr, ft, id)
+--- Creates a new parser.
+---
+--- It is not recommended to use this, use vim.treesitter.get_parser() instead.
+---
+---@param bufnr The buffer the parser will be tied to
+---@param lang The language of the parser
+---@param opts Options to pass to the created language tree
+function M._create_parser(bufnr, lang, opts)
+  language.require_language(lang)
   if bufnr == 0 then
     bufnr = a.nvim_get_current_buf()
   end
-  local self = setmetatable({bufnr=bufnr, valid=false}, Parser)
-  self._parser = vim._create_ts_parser(ft)
-  self:parse()
-    -- TODO(bfredl): use weakref to self, so that the parser is free'd is no plugin is
-    -- using it.
-  local function lines_cb(_, ...)
-    return self:_on_lines(...)
+
+  vim.fn.bufload(bufnr)
+
+  local self = LanguageTree.new(bufnr, lang, opts)
+
+  ---@private
+  local function bytes_cb(_, ...)
+    self:_on_bytes(...)
   end
-  local detach_cb = nil
-  if id ~= nil then
-    detach_cb = function()
-      if parsers[id] == self then
-        parsers[id] = nil
-      end
+
+  ---@private
+  local function detach_cb(_, ...)
+    if parsers[bufnr] == self then
+      parsers[bufnr] = nil
     end
+    self:_on_detach(...)
   end
-  a.nvim_buf_attach(self.bufnr, false, {on_lines=lines_cb, on_detach=detach_cb})
+
+  ---@private
+  local function reload_cb(_, ...)
+    self:_on_reload(...)
+  end
+
+  a.nvim_buf_attach(
+    self:source(),
+    false,
+    { on_bytes = bytes_cb, on_detach = detach_cb, on_reload = reload_cb, preview = true }
+  )
+
+  self:parse()
+
   return self
 end
 
-function module.get_parser(bufnr, ft)
+--- Gets the parser for this bufnr / ft combination.
+---
+--- If needed this will create the parser.
+--- Unconditionally attach the provided callback
+---
+---@param bufnr The buffer the parser should be tied to
+---@param lang The filetype of this parser
+---@param opts Options object to pass to the created language tree
+---
+---@returns The parser
+function M.get_parser(bufnr, lang, opts)
+  opts = opts or {}
+
   if bufnr == nil or bufnr == 0 then
     bufnr = a.nvim_get_current_buf()
   end
-  if ft == nil then
-    ft = a.nvim_buf_get_option(bufnr, "filetype")
+  if lang == nil then
+    lang = a.nvim_buf_get_option(bufnr, 'filetype')
   end
-  local id = tostring(bufnr)..'_'..ft
 
-  if parsers[id] == nil then
-    parsers[id] = module.create_parser(bufnr, ft, id)
+  if parsers[bufnr] == nil or parsers[bufnr]:lang() ~= lang then
+    parsers[bufnr] = M._create_parser(bufnr, lang, opts)
   end
-  return parsers[id]
+
+  parsers[bufnr]:register_cbs(opts.buf_attach_cbs)
+
+  return parsers[bufnr]
 end
 
-return module
+--- Gets a string parser
+---
+---@param str The string to parse
+---@param lang The language of this string
+---@param opts Options to pass to the created language tree
+function M.get_string_parser(str, lang, opts)
+  vim.validate({
+    str = { str, 'string' },
+    lang = { lang, 'string' },
+  })
+  language.require_language(lang)
+
+  return LanguageTree.new(str, lang, opts)
+end
+
+return M

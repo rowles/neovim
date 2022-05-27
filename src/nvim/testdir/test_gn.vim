@@ -1,9 +1,8 @@
 " Test for gn command
 
 func Test_gn_command()
-  set belloff=all
   noautocmd new
-  " replace a single char by itsself quoted:
+  " replace a single char by itself quoted:
   call setline('.', 'abc x def x ghi x jkl')
   let @/ = 'x'
   exe "norm! cgn'x'\<esc>.."
@@ -157,8 +156,32 @@ func Test_gn_command()
   sil! %d _
 
   set wrapscan&vim
-  set belloff&vim
-endfu
+endfunc
+
+func Test_gN_repeat()
+  new
+  call setline(1, 'this list is a list with a list of a list.')
+  /list
+  normal $gNgNgNx
+  call assert_equal('list with a list of a list', @")
+  bwipe!
+endfunc
+
+func Test_gN_then_gn()
+  new
+
+  call setline(1, 'this list is a list with a list of a last.')
+  /l.st
+  normal $gNgNgnx
+  call assert_equal('last', @")
+
+  call setline(1, 'this list is a list with a lust of a last.')
+  /l.st
+  normal $gNgNgNgnx
+  call assert_equal('lust of a last', @")
+
+  bwipe!
+endfunc
 
 func Test_gn_multi_line()
   new

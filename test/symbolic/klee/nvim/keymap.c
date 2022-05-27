@@ -1,7 +1,7 @@
 #include <stdbool.h>
 
 #include "nvim/types.h"
-#include "nvim/keymap.h"
+#include "nvim/keycodes.h"
 #include "nvim/ascii.h"
 #include "nvim/eval/typval.h"
 
@@ -545,7 +545,7 @@ unsigned int trans_special(const char_u **srcp, const size_t src_len,
     dst[dlen++] = K_SPECIAL;
     dst[dlen++] = (char_u)KEY2TERMCAP0(key);
     dst[dlen++] = KEY2TERMCAP1(key);
-  } else if (has_mbyte && !keycode) {
+  } else if (!keycode) {
     dlen += (unsigned int)(*mb_char2bytes)(key, dst + dlen);
   } else if (keycode) {
     char_u *after = add_char2buf(key, dst + dlen);

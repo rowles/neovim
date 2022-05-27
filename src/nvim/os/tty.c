@@ -23,15 +23,6 @@
 /// @param out_fd stdout file descriptor
 void os_tty_guess_term(const char **term, int out_fd)
 {
-  bool winpty = (os_getenv("NVIM") != NULL);
-
-  if (winpty) {
-    // Force TERM=win32con when running in winpty.
-    *term = "win32con";
-    uv_set_vterm_state(UV_UNSUPPORTED);
-    return;
-  }
-
   bool conemu_ansi = strequal(os_getenv("ConEmuANSI"), "ON");
   bool vtp = false;
 
@@ -55,7 +46,7 @@ void os_tty_guess_term(const char **term, int out_fd)
   }
 
   if (conemu_ansi) {
-    uv_set_vterm_state(UV_SUPPORTED);
+    uv_tty_set_vterm_state(UV_TTY_SUPPORTED);
   }
 }
 #endif

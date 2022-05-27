@@ -75,7 +75,7 @@ local busted = require('busted')
 local deepcopy = helpers.deepcopy
 local shallowcopy = helpers.shallowcopy
 local concat_tables = helpers.concat_tables
-local request, run_session = helpers.request, helpers.run_session
+local run_session = helpers.run_session
 local eq = helpers.eq
 local dedent = helpers.dedent
 local get_session = helpers.get_session
@@ -89,8 +89,6 @@ end
 
 local Screen = {}
 Screen.__index = Screen
-
-local debug_screen
 
 local default_timeout_factor = 1
 if os.getenv('VALGRIND') then
@@ -123,18 +121,6 @@ do
   Screen.colornames = colornames
 end
 
-function Screen.debug(command)
-  if not command then
-    command = 'pynvim -n -c '
-  end
-  command = command .. request('vim_eval', '$NVIM_LISTEN_ADDRESS')
-  if debug_screen then
-    debug_screen:close()
-  end
-  debug_screen = io.popen(command, 'r')
-  debug_screen:read()
-end
-
 function Screen.new(width, height)
   if not width then
     width = 53
@@ -158,6 +144,7 @@ function Screen.new(width, height)
     wildmenu_items = nil,
     wildmenu_selected = nil,
     win_position = {},
+    win_viewport = {},
     float_pos = {},
     msg_grid = nil,
     msg_grid_pos = nil,
@@ -169,7 +156,7 @@ function Screen.new(width, height)
     ruler = {},
     hl_groups = {},
     _default_attr_ids = nil,
-    _mouse_enabled = true,
+    mouse_enabled = true,
     _attrs = {},
     _hl_info = {[0]={}},
     _attr_table = {[0]={{},{}}},
@@ -178,6 +165,7 @@ function Screen.new(width, height)
     _width = width,
     _height = height,
     _grids = {},
+    _grid_win_extmarks = {},
     _cursor = {
       grid = 1, row = 1, col = 1
     },
@@ -254,7 +242,7 @@ end
 -- canonical order of ext keys, used  to generate asserts
 local ext_keys = {
   'popupmenu', 'cmdline', 'cmdline_block', 'wildmenu_items', 'wildmenu_pos',
-  'messages', 'showmode', 'showcmd', 'ruler', 'float_pos',
+  'messages', 'msg_history', 'showmode', 'showcmd', 'ruler', 'float_pos', 'win_viewport'
 }
 
 -- Asserts that the screen state eventually matches an expected state.
@@ -277,6 +265,8 @@ local ext_keys = {
 --              attributes in the final state are an error.
 --              Use screen:set_default_attr_ids() to define attributes for many
 --              expect() calls.
+-- extmarks:    Expected win_extmarks accumulated for the grids. For each grid,
+--              the win_extmark messages are accumulated into an array.
 -- condition:   Function asserting some arbitrary condition. Return value is
 --              ignored, throw an error (use eq() or similar) to signal failure.
 -- any:         Lua pattern string expected to match a screen line. NB: the
@@ -317,9 +307,9 @@ function Screen:expect(expected, attr_ids, ...)
   assert(next({...}) == nil, "invalid args to expect()")
   if type(expected) == "table" then
     assert(not (attr_ids ~= nil))
-    local is_key = {grid=true, attr_ids=true, condition=true,
+    local is_key = {grid=true, attr_ids=true, condition=true, mouse_enabled=true,
                     any=true, mode=true, unchanged=true, intermediate=true,
-                    reset=true, timeout=true, request_cb=true, hl_groups=true}
+                    reset=true, timeout=true, request_cb=true, hl_groups=true, extmarks=true}
     for _, v in ipairs(ext_keys) do
       is_key[v] = true
     end
@@ -421,9 +411,24 @@ screen:redraw_debug() to show all intermediate screen states.  ]])
     if expected.mode ~= nil then
       extstate.mode = self.mode
     end
+    if expected.mouse_enabled ~= nil then
+      extstate.mouse_enabled = self.mouse_enabled
+    end
+    if expected.win_viewport == nil then
+      extstate.win_viewport = nil
+    end
+
+    if expected.float_pos then
+      expected.float_pos = deepcopy(expected.float_pos)
+      for _, v in pairs(expected.float_pos) do
+        if not v.external and v[7] == nil then
+          v[7] = 50
+        end
+      end
+    end
 
     -- Convert assertion errors into invalid screen state descriptions.
-    for _, k in ipairs(concat_tables(ext_keys, {'mode'})) do
+    for _, k in ipairs(concat_tables(ext_keys, {'mode', 'mouse_enabled'})) do
       -- Empty states are considered the default and need not be mentioned.
       if (not (expected[k] == nil and isempty(extstate[k]))) then
         local status, res = pcall(eq, expected[k], extstate[k], k)
@@ -440,6 +445,25 @@ screen:redraw_debug() to show all intermediate screen states.  ]])
         local status, res = pcall(eq, expected_hl, actual_hl, "highlight "..name)
         if not status then
           return tostring(res)
+        end
+      end
+    end
+
+    if expected.extmarks ~= nil then
+      for gridid, expected_marks in pairs(expected.extmarks) do
+        local stored_marks = self._grid_win_extmarks[gridid]
+        if stored_marks == nil then
+          return 'no win_extmark for grid '..tostring(gridid)
+        end
+        local status, res = pcall(eq, expected_marks, stored_marks, "extmarks for grid "..tostring(gridid))
+        if not status then
+          return tostring(res)
+        end
+      end
+      for gridid, _ in pairs(self._grid_win_extmarks) do
+        local expected_marks = expected.extmarks[gridid]
+        if expected_marks == nil then
+          return 'unexpected win_extmark for grid '..tostring(gridid)
         end
       end
     end
@@ -528,7 +552,7 @@ function Screen:_wait(check, flags)
   elseif not checked then
     err = check()
     if not err and flags.unchanged then
-      -- expecting NO screen change: use a shorter timout
+      -- expecting NO screen change: use a shorter timeout
       success_seen = true
     end
   end
@@ -560,16 +584,16 @@ to the test if they make sense.
     print([[
 
 warning: Screen changes were received after the expected state. This indicates
-indeterminism in the test. Try adding screen:expect(...) (or wait()) between
-asynchronous (feed(), nvim_input()) and synchronous API calls.
+indeterminism in the test. Try adding screen:expect(...) (or poke_eventloop())
+between asynchronous (feed(), nvim_input()) and synchronous API calls.
   - Use screen:redraw_debug() to investigate; it may find relevant intermediate
     states that should be added to the test to make it more robust.
   - If the purpose of the test is to assert state after some user input sent
     with feed(), adding screen:expect() before the feed() will help to ensure
     the input is sent when Nvim is in a predictable state. This is preferable
-    to wait(), for being closer to real user interaction.
-  - wait() can trigger redraws and consequently generate more indeterminism.
-    Try removing wait().
+    to poke_eventloop(), for being closer to real user interaction.
+  - poke_eventloop() can trigger redraws and thus generate more indeterminism.
+    Try removing poke_eventloop().
       ]])
     did_warn = true
   end
@@ -687,6 +711,7 @@ function Screen:_reset()
   self.cmdline_block = {}
   self.wildmenu_items = nil
   self.wildmenu_pos = nil
+  self._grid_win_extmarks = {}
 end
 
 function Screen:_handle_mode_info_set(cursor_style_enabled, mode_info)
@@ -726,6 +751,7 @@ function Screen:_handle_grid_destroy(grid)
   self._grids[grid] = nil
   if self._options.ext_multigrid then
     self.win_position[grid] = nil
+    self.win_viewport[grid] = nil
   end
 end
 
@@ -746,14 +772,25 @@ function Screen:_handle_grid_cursor_goto(grid, row, col)
 end
 
 function Screen:_handle_win_pos(grid, win, startrow, startcol, width, height)
-    self.win_position[grid] = {
-        win = win,
-        startrow = startrow,
-        startcol = startcol,
-        width = width,
-        height = height
-    }
-    self.float_pos[grid] = nil
+  self.win_position[grid] = {
+    win = win,
+    startrow = startrow,
+    startcol = startcol,
+    width = width,
+    height = height
+  }
+  self.float_pos[grid] = nil
+end
+
+function Screen:_handle_win_viewport(grid, win, topline, botline, curline, curcol, linecount)
+  self.win_viewport[grid] = {
+    win = win,
+    topline = topline,
+    botline = botline,
+    curline = curline,
+    curcol = curcol,
+    linecount = linecount
+  }
 end
 
 function Screen:_handle_win_float_pos(grid, ...)
@@ -775,6 +812,13 @@ function Screen:_handle_win_close(grid)
   self.float_pos[grid] = nil
 end
 
+function Screen:_handle_win_extmark(grid, ...)
+  if self._grid_win_extmarks[grid] == nil then
+    self._grid_win_extmarks[grid] = {}
+  end
+  table.insert(self._grid_win_extmarks[grid], {...})
+end
+
 function Screen:_handle_busy_start()
   self._busy = true
 end
@@ -784,11 +828,11 @@ function Screen:_handle_busy_stop()
 end
 
 function Screen:_handle_mouse_on()
-  self._mouse_enabled = true
+  self.mouse_enabled = true
 end
 
 function Screen:_handle_mouse_off()
-  self._mouse_enabled = false
+  self.mouse_enabled = false
 end
 
 function Screen:_handle_mode_change(mode, idx)
@@ -1039,6 +1083,10 @@ function Screen:_handle_msg_history_show(entries)
   self.msg_history = entries
 end
 
+function Screen:_handle_msg_history_clear()
+  self.msg_history = {}
+end
+
 function Screen:_clear_block(grid, top, bot, left, right)
   for i = top, bot do
     self:_clear_row_section(grid, i, left, right)
@@ -1127,8 +1175,10 @@ function Screen:_extstate_repr(attr_state)
 
   local msg_history = {}
   for i, entry in ipairs(self.msg_history) do
-    messages[i] = {kind=entry[1], content=self:_chunks_repr(entry[2], attr_state)}
+    msg_history[i] = {kind=entry[1], content=self:_chunks_repr(entry[2], attr_state)}
   end
+
+  local win_viewport = (next(self.win_viewport) and self.win_viewport) or nil
 
   return {
     popupmenu=self.popupmenu,
@@ -1141,7 +1191,8 @@ function Screen:_extstate_repr(attr_state)
     showcmd=self:_chunks_repr(self.showcmd, attr_state),
     ruler=self:_chunks_repr(self.ruler, attr_state),
     msg_history=msg_history,
-    float_pos=self.float_pos
+    float_pos=self.float_pos,
+    win_viewport=win_viewport,
   }
 end
 
@@ -1216,10 +1267,6 @@ function Screen:render(headers, attr_state, preview)
   return rv
 end
 
-local remove_all_metatables = function(item, path)
-  if path[#path] ~= inspect.METATABLE then return item end
-end
-
 -- Returns the current screen state in the form of a screen:expect()
 -- keyword-args map.
 function Screen:get_snapshot(attrs, ignore)
@@ -1269,6 +1316,36 @@ function Screen:get_snapshot(attrs, ignore)
   return kwargs, ext_state, attr_state
 end
 
+local function fmt_ext_state(name, state)
+  local function remove_all_metatables(item, path)
+    if path[#path] ~= inspect.METATABLE then
+      return item
+    end
+  end
+  if name == "win_viewport" then
+    local str = "{\n"
+    for k,v in pairs(state) do
+      str = (str.."  ["..k.."] = {win = {id = "..v.win.id.."}, topline = "
+             ..v.topline..", botline = "..v.botline..", curline = "..v.curline
+             ..", curcol = "..v.curcol..", linecount = "..v.linecount.."};\n")
+    end
+    return str .. "}"
+  elseif name == "float_pos" then
+    local str = "{\n"
+    for k,v in pairs(state) do
+      str = str.."  ["..k.."] = {{id = "..v[1].id.."}"
+      for i = 2, #v do
+        str = str..", "..inspect(v[i])
+      end
+      str = str .. "};\n"
+    end
+    return str .. "}"
+  else
+    -- TODO(bfredl): improve formatting of more states
+    return inspect(state,{process=remove_all_metatables})
+  end
+end
+
 function Screen:print_snapshot(attrs, ignore)
   local kwargs, ext_state, attr_state = self:get_snapshot(attrs, ignore)
   local attrstr = ""
@@ -1282,7 +1359,7 @@ function Screen:print_snapshot(attrs, ignore)
         dict = "{"..self:_pprint_attrs(a).."}"
       end
       local keyval = (type(i) == "number") and "["..tostring(i).."]" or i
-      table.insert(attrstrs, "  "..keyval.." = "..dict..",")
+      table.insert(attrstrs, "  "..keyval.." = "..dict..";")
     end
     attrstr = (", attr_ids={\n"..table.concat(attrstrs, "\n").."\n}")
   end
@@ -1291,9 +1368,8 @@ function Screen:print_snapshot(attrs, ignore)
   print(kwargs.grid)
   io.stdout:write( "]]"..attrstr)
   for _, k in ipairs(ext_keys) do
-    if ext_state[k] ~= nil then
-      -- TODO(bfredl): improve formatting
-      io.stdout:write(", "..k.."="..inspect(ext_state[k],{process=remove_all_metatables}))
+    if ext_state[k] ~= nil and not (k == "win_viewport" and not self.options.ext_multigrid) then
+      io.stdout:write(", "..k.."="..fmt_ext_state(k, ext_state[k]))
     end
   end
   print("}\n")
@@ -1503,10 +1579,11 @@ end
 
 function Screen:_equal_attrs(a, b)
     return a.bold == b.bold and a.standout == b.standout and
-       a.underline == b.underline and a.undercurl == b.undercurl and
-       a.italic == b.italic and a.reverse == b.reverse and
-       a.foreground == b.foreground and a.background == b.background and
-       a.special == b.special and a.blend == b.blend and
+       a.underline == b.underline and a.underlineline == b.underlineline and
+       a.undercurl == b.undercurl and a.underdot == b.underdot and
+       a.underdash == b.underdash and a.italic == b.italic and
+       a.reverse == b.reverse and a.foreground == b.foreground and
+       a.background == b.background and a.special == b.special and a.blend == b.blend and
        a.strikethrough == b.strikethrough and
        a.fg_indexed == b.fg_indexed and a.bg_indexed == b.bg_indexed
 end

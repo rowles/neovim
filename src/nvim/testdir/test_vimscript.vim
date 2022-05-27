@@ -1,15 +1,18 @@
 " Test various aspects of the Vim script language.
 " Most of this was formerly in test49.
 
+source check.vim
+source shared.vim
+
 "-------------------------------------------------------------------------------
 " Test environment							    {{{1
 "-------------------------------------------------------------------------------
 
-com!               XpathINIT  let g:Xpath = ''
+com!		   XpathINIT  let g:Xpath = ''
 com! -nargs=1 -bar Xpath      let g:Xpath = g:Xpath . <args>
 
 " Append a message to the "messages" file
-func! Xout(text)
+func Xout(text)
     split messages
     $put =a:text
     wq
@@ -25,7 +28,7 @@ com! -nargs=1	     Xout     call Xout(<args>)
 " in the variable argument list.  This function is useful if similar tests are
 " to be made for a ":return" from a function call or a ":finish" in a script
 " file.
-function! MakeScript(funcname, ...)
+func MakeScript(funcname, ...)
     let script = tempname()
     execute "redir! >" . script
     execute "function" a:funcname
@@ -50,7 +53,7 @@ function! MakeScript(funcname, ...)
     write
     bwipeout
     return script
-endfunction
+endfunc
 
 " ExecAsScript - Source a temporary script made from a function.	    {{{2
 "
@@ -301,9 +304,9 @@ XpathINIT
 "
 let calls = ""
 com! -nargs=1 CALL
-    	\ if !exists("calls") && !exists("outer") |
-    	\ let g:calls = g:calls . <args> |
-    	\ endif
+	    \ if !exists("calls") && !exists("outer") |
+	    \ let g:calls = g:calls . <args> |
+	    \ endif
 
 let i = 0
 while i < 3
@@ -357,7 +360,7 @@ endif
 if exists("*F1")
     call F1("F1")
     if exists("*G1")
-        call G1("G1")
+       call G1("G1")
     endif
 endif
 
@@ -367,13 +370,13 @@ endif
 if exists("*F2")
     call F2(2, "F2")
     if exists("*G21")
-        call G21("G21")
+       call G21("G21")
     endif
     if exists("*G22")
-        call G22("G22")
+       call G22("G22")
     endif
     if exists("*G23")
-        call G23("G23")
+       call G23("G23")
     endif
 endif
 
@@ -383,13 +386,13 @@ endif
 if exists("*F3")
     call F3(3, "F3")
     if exists("*G31")
-        call G31("G31")
+       call G31("G31")
     endif
     if exists("*G32")
-        call G32("G32")
+       call G32("G32")
     endif
     if exists("*G33")
-        call G33("G33")
+       call G33("G33")
     endif
 endif
 
@@ -635,12 +638,12 @@ function! MSG(enr, emsg)
 	if v:errmsg == ""
 	    Xout "Message missing."
 	else
-	    let v:errmsg = escape(v:errmsg, '"')
+	    let v:errmsg = v:errmsg->escape('"')
 	    Xout "Unexpected message:" v:errmsg
 	endif
     endif
     return match
-endfunction
+endfunc
 
 if 1 || strlen("\"") | Xpath 'a'
     Xpath 'b'
@@ -919,9 +922,203 @@ func Test_if_bar_fail()
     call assert_equal('acdfh-acfh', g:test15_result)
 endfunc
 
+"-------------------------------------------------------------------------------
+" Test 16:  Double :else or :elseif after :else				    {{{1
+"
+"	    Multiple :elses or an :elseif after an :else are forbidden.
+"-------------------------------------------------------------------------------
+
+func T16_F() abort
+  if 0
+    Xpath 'a'
+  else
+    Xpath 'b'
+  else		" aborts function
+    Xpath 'c'
+  endif
+  Xpath 'd'
+endfunc
+
+func T16_G() abort
+  if 0
+    Xpath 'a'
+  else
+    Xpath 'b'
+  elseif 1		" aborts function
+    Xpath 'c'
+  else
+    Xpath 'd'
+  endif
+  Xpath 'e'
+endfunc
+
+func T16_H() abort
+  if 0
+    Xpath 'a'
+  elseif 0
+    Xpath 'b'
+  else
+    Xpath 'c'
+  else		" aborts function
+    Xpath 'd'
+  endif
+  Xpath 'e'
+endfunc
+
+func T16_I() abort
+  if 0
+    Xpath 'a'
+  elseif 0
+    Xpath 'b'
+  else
+    Xpath 'c'
+  elseif 1		" aborts function
+    Xpath 'd'
+  else
+    Xpath 'e'
+  endif
+  Xpath 'f'
+endfunc
+
+func Test_Multi_Else()
+  XpathINIT
+  try
+    call T16_F()
+  catch /E583:/
+    Xpath 'e'
+  endtry
+  call assert_equal('be', g:Xpath)
+
+  XpathINIT
+  try
+    call T16_G()
+  catch /E584:/
+    Xpath 'f'
+  endtry
+  call assert_equal('bf', g:Xpath)
+
+  XpathINIT
+  try
+    call T16_H()
+  catch /E583:/
+    Xpath 'f'
+  endtry
+  call assert_equal('cf', g:Xpath)
+
+  XpathINIT
+  try
+    call T16_I()
+  catch /E584:/
+    Xpath 'g'
+  endtry
+  call assert_equal('cg', g:Xpath)
+endfunc
 
 "-------------------------------------------------------------------------------
-" Test 16:  Recognizing {} in variable name.			    {{{1
+" Test 17:  Nesting of unmatched :if or :endif inside a :while		    {{{1
+"
+"	    The :while/:endwhile takes precedence in nesting over an unclosed
+"	    :if or an unopened :endif.
+"-------------------------------------------------------------------------------
+
+" While loops inside a function are continued on error.
+func T17_F()
+  let loops = 3
+  while loops > 0
+    let loops -= 1
+    Xpath 'a' . loops
+    if (loops == 1)
+      Xpath 'b' . loops
+      continue
+    elseif (loops == 0)
+      Xpath 'c' . loops
+      break
+    elseif 1
+      Xpath 'd' . loops
+    " endif missing!
+  endwhile	" :endwhile after :if 1
+  Xpath 'e'
+endfunc
+
+func T17_G()
+  let loops = 2
+  while loops > 0
+    let loops -= 1
+    Xpath 'a' . loops
+    if 0
+      Xpath 'b' . loops
+    " endif missing
+  endwhile	" :endwhile after :if 0
+endfunc
+
+func T17_H()
+  let loops = 2
+  while loops > 0
+    let loops -= 1
+    Xpath 'a' . loops
+    " if missing!
+    endif	" :endif without :if in while
+    Xpath 'b' . loops
+  endwhile
+endfunc
+
+" Error continuation outside a function is at the outermost :endwhile or :endif.
+XpathINIT
+let v:errmsg = ''
+let loops = 2
+while loops > 0
+    let loops -= 1
+    Xpath 'a' . loops
+    if 0
+	Xpath 'b' . loops
+    " endif missing! Following :endwhile fails.
+endwhile | Xpath 'c'
+Xpath 'd'
+call assert_match('E171:', v:errmsg)
+call assert_equal('a1d', g:Xpath)
+
+func Test_unmatched_if_in_while()
+  XpathINIT
+  call assert_fails('call T17_F()', 'E171:')
+  call assert_equal('a2d2a1b1a0c0e', g:Xpath)
+
+  XpathINIT
+  call assert_fails('call T17_G()', 'E171:')
+  call assert_equal('a1a0', g:Xpath)
+
+  XpathINIT
+  call assert_fails('call T17_H()', 'E580:')
+  call assert_equal('a1b1a0b0', g:Xpath)
+endfunc
+
+"-------------------------------------------------------------------------------
+"-------------------------------------------------------------------------------
+"-------------------------------------------------------------------------------
+" Test 87   using (expr) ? funcref : funcref				    {{{1
+"
+"	    Vim needs to correctly parse the funcref and even when it does
+"	    not execute the funcref, it needs to consume the trailing ()
+"-------------------------------------------------------------------------------
+
+func Add2(x1, x2)
+  return a:x1 + a:x2
+endfu
+
+func GetStr()
+  return "abcdefghijklmnopqrstuvwxyp"
+endfu
+
+func Test_funcref_with_condexpr()
+  call assert_equal(5, function('Add2')(2,3))
+
+  call assert_equal(3, 1 ? function('Add2')(1,2) : function('Add2')(2,3))
+  call assert_equal(5, 0 ? function('Add2')(1,2) : function('Add2')(2,3))
+  " Make sure, GetStr() still works.
+  call assert_equal('abcdefghijk', GetStr()[0:10])
+endfunc
+
+"-------------------------------------------------------------------------------
+" Test 90:  Recognizing {} in variable name.			    {{{1
 "-------------------------------------------------------------------------------
 
 func Test_curlies()
@@ -958,6 +1155,86 @@ func Test_type()
     call assert_equal(v:t_float, type(0.0))
     call assert_equal(v:t_bool, type(v:false))
     call assert_equal(v:t_bool, type(v:true))
+    call assert_equal(v:t_string, type(v:_null_string))
+    call assert_equal(v:t_list, type(v:_null_list))
+    call assert_equal(v:t_dict, type(v:_null_dict))
+    call assert_equal(v:t_blob, type(v:_null_blob))
+
+    call assert_equal(0, 0 + v:false)
+    call assert_equal(1, 0 + v:true)
+    " call assert_equal(0, 0 + v:none)
+    call assert_equal(0, 0 + v:null)
+
+    call assert_equal('false', '' . v:false)
+    call assert_equal('true', '' . v:true)
+    " call assert_equal('none', '' . v:none)
+    call assert_equal('null', '' . v:null)
+
+    call assert_true(v:false == 0)
+    call assert_false(v:false != 0)
+    call assert_true(v:true == 1)
+    call assert_false(v:true != 1)
+    call assert_false(v:true == v:false)
+    call assert_true(v:true != v:false)
+
+    call assert_true(v:null == 0)
+    call assert_false(v:null != 0)
+    " call assert_true(v:none == 0)
+    " call assert_false(v:none != 0)
+
+    call assert_true(v:false is v:false)
+    call assert_true(v:true is v:true)
+    " call assert_true(v:none is v:none)
+    call assert_true(v:null is v:null)
+
+    call assert_false(v:false isnot v:false)
+    call assert_false(v:true isnot v:true)
+    " call assert_false(v:none isnot v:none)
+    call assert_false(v:null isnot v:null)
+
+    call assert_false(v:false is 0)
+    call assert_false(v:true is 1)
+    call assert_false(v:true is v:false)
+    " call assert_false(v:none is 0)
+    call assert_false(v:null is 0)
+    " call assert_false(v:null is v:none)
+
+    call assert_true(v:false isnot 0)
+    call assert_true(v:true isnot 1)
+    call assert_true(v:true isnot v:false)
+    " call assert_true(v:none isnot 0)
+    call assert_true(v:null isnot 0)
+    " call assert_true(v:null isnot v:none)
+
+    call assert_equal(v:false, eval(string(v:false)))
+    call assert_equal(v:true, eval(string(v:true)))
+    " call assert_equal(v:none, eval(string(v:none)))
+    call assert_equal(v:null, eval(string(v:null)))
+
+    call assert_equal(v:false, copy(v:false))
+    call assert_equal(v:true, copy(v:true))
+    " call assert_equal(v:none, copy(v:none))
+    call assert_equal(v:null, copy(v:null))
+
+    call assert_equal([v:false], deepcopy([v:false]))
+    call assert_equal([v:true], deepcopy([v:true]))
+    " call assert_equal([v:none], deepcopy([v:none]))
+    call assert_equal([v:null], deepcopy([v:null]))
+
+    call assert_true(empty(v:false))
+    call assert_false(empty(v:true))
+    call assert_true(empty(v:null))
+    " call assert_true(empty(v:none))
+
+    func ChangeYourMind()
+	try
+	    return v:true
+	finally
+	    return 'something else'
+	endtry
+    endfunc
+
+    call ChangeYourMind()
 endfunc
 
 "-------------------------------------------------------------------------------
@@ -1068,10 +1345,6 @@ endfunc
 "-------------------------------------------------------------------------------
 
 func Test_num64()
-    if !has('num64')
-	return
-    endif
-
     call assert_notequal( 4294967296, 0)
     call assert_notequal(-4294967296, 0)
     call assert_equal( 4294967296,  0xFFFFffff + 1)
@@ -1081,8 +1354,10 @@ func Test_num64()
     call assert_equal(-9223372036854775807, -1 / 0)
     call assert_equal(-9223372036854775807 - 1,  0 / 0)
 
-    call assert_equal( 0x7FFFffffFFFFffff, float2nr( 1.0e150))
-    call assert_equal(-0x7FFFffffFFFFffff, float2nr(-1.0e150))
+    if has('float')
+      call assert_equal( 0x7FFFffffFFFFffff, float2nr( 1.0e150))
+      call assert_equal(-0x7FFFffffFFFFffff, float2nr(-1.0e150))
+    endif
 
     let rng = range(0xFFFFffff, 0x100000001)
     call assert_equal([0xFFFFffff, 0x100000000, 0x100000001], rng)
@@ -1103,70 +1378,70 @@ endfunction
 func Test_script_lines()
     " :append
     try
-        call DefineFunction('T_Append', [
-                    \ 'append',
-                    \ 'py <<EOS',
-                    \ '.',
-                    \ ])
+	call DefineFunction('T_Append', [
+		    \ 'append',
+		    \ 'py <<EOS',
+		    \ '.',
+		    \ ])
     catch
-        call assert_report("Can't define function")
+	call assert_report("Can't define function")
     endtry
     try
-        call DefineFunction('T_Append', [
-                    \ 'append',
-                    \ 'abc',
-                    \ ])
-        call assert_report("Shouldn't be able to define function")
+	call DefineFunction('T_Append', [
+		    \ 'append',
+		    \ 'abc',
+		    \ ])
+	call assert_report("Shouldn't be able to define function")
     catch
-        call assert_exception('Vim(function):E126: Missing :endfunction')
+	call assert_exception('Vim(function):E126: Missing :endfunction')
     endtry
 
     " :change
     try
-        call DefineFunction('T_Change', [
-                    \ 'change',
-                    \ 'py <<EOS',
-                    \ '.',
-                    \ ])
+	call DefineFunction('T_Change', [
+		    \ 'change',
+		    \ 'py <<EOS',
+		    \ '.',
+		    \ ])
     catch
-        call assert_report("Can't define function")
+	call assert_report("Can't define function")
     endtry
     try
-        call DefineFunction('T_Change', [
-                    \ 'change',
-                    \ 'abc',
-                    \ ])
-        call assert_report("Shouldn't be able to define function")
+	call DefineFunction('T_Change', [
+		    \ 'change',
+		    \ 'abc',
+		    \ ])
+	call assert_report("Shouldn't be able to define function")
     catch
-        call assert_exception('Vim(function):E126: Missing :endfunction')
+	call assert_exception('Vim(function):E126: Missing :endfunction')
     endtry
 
     " :insert
     try
-        call DefineFunction('T_Insert', [
-                    \ 'insert',
-                    \ 'py <<EOS',
-                    \ '.',
-                    \ ])
+	call DefineFunction('T_Insert', [
+		    \ 'insert',
+		    \ 'py <<EOS',
+		    \ '.',
+		    \ ])
     catch
-        call assert_report("Can't define function")
+	call assert_report("Can't define function")
     endtry
     try
-        call DefineFunction('T_Insert', [
-                    \ 'insert',
-                    \ 'abc',
-                    \ ])
-        call assert_report("Shouldn't be able to define function")
+	call DefineFunction('T_Insert', [
+		    \ 'insert',
+		    \ 'abc',
+		    \ ])
+	call assert_report("Shouldn't be able to define function")
     catch
-        call assert_exception('Vim(function):E126: Missing :endfunction')
+	call assert_exception('Vim(function):E126: Missing :endfunction')
     endtry
 endfunc
 
 "-------------------------------------------------------------------------------
 " Test 96:  line continuation						    {{{1
 "
-"           Undefined behavior was detected by ubsan with line continuation
-"           after an empty line.
+"	    Undefined behavior was detected by ubsan with line continuation
+"	    after an empty line.
 "-------------------------------------------------------------------------------
 func Test_script_emty_line_continuation()
 
@@ -1180,6 +1455,7 @@ func Test_bitwise_functions()
     " and
     call assert_equal(127, and(127, 127))
     call assert_equal(16, and(127, 16))
+    eval 127->and(16)->assert_equal(16)
     call assert_equal(0, and(127, 128))
     call assert_fails("call and(1.0, 1)", 'E805:')
     call assert_fails("call and([], 1)", 'E745:')
@@ -1190,6 +1466,7 @@ func Test_bitwise_functions()
     " or
     call assert_equal(23, or(16, 7))
     call assert_equal(15, or(8, 7))
+    eval 8->or(7)->assert_equal(15)
     call assert_equal(123, or(0, 123))
     call assert_fails("call or(1.0, 1)", 'E805:')
     call assert_fails("call or([], 1)", 'E745:')
@@ -1200,6 +1477,7 @@ func Test_bitwise_functions()
     " xor
     call assert_equal(0, xor(127, 127))
     call assert_equal(111, xor(127, 16))
+    eval 127->xor(16)->assert_equal(111)
     call assert_equal(255, xor(127, 128))
     call assert_fails("call xor(1.0, 1)", 'E805:')
     call assert_fails("call xor([], 1)", 'E745:')
@@ -1209,6 +1487,7 @@ func Test_bitwise_functions()
     call assert_fails("call xor(1, {})", 'E728:')
     " invert
     call assert_equal(65408, and(invert(127), 65535))
+    eval 127->invert()->and(65535)->assert_equal(65408)
     call assert_equal(65519, and(invert(16), 65535))
     call assert_equal(65407, and(invert(128), 65535))
     call assert_fails("call invert(1.0)", 'E805:')
@@ -1313,27 +1592,15 @@ func Test_compound_assignment_operators()
     " Test special cases: division or modulus with 0.
     let x = 1
     let x /= 0
-    if has('num64')
-        call assert_equal(0x7FFFFFFFFFFFFFFF, x)
-    else
-        call assert_equal(0x7fffffff, x)
-    endif
+    call assert_equal(0x7FFFFFFFFFFFFFFF, x)
 
     let x = -1
     let x /= 0
-    if has('num64')
-        call assert_equal(-0x7FFFFFFFFFFFFFFF, x)
-    else
-        call assert_equal(-0x7fffffff, x)
-    endif
+    call assert_equal(-0x7FFFFFFFFFFFFFFF, x)
 
     let x = 0
     let x /= 0
-    if has('num64')
-        call assert_equal(-0x7FFFFFFFFFFFFFFF - 1, x)
-    else
-        call assert_equal(-0x7FFFFFFF - 1, x)
-    endif
+    call assert_equal(-0x7FFFFFFFFFFFFFFF - 1, x)
 
     let x = 1
     let x %= 0
@@ -1353,22 +1620,22 @@ func Test_compound_assignment_operators()
     call assert_equal('string', x)
     let x += 1
     call assert_equal(1, x)
-    let x -= 1.5
-    call assert_equal(-0.5, x)
 
     if has('float')
-        " Test for float
-        let x = 0.5
-        let x += 4.5
-        call assert_equal(5.0, x)
-        let x -= 1.5
-        call assert_equal(3.5, x)
-        let x *= 3.0
-        call assert_equal(10.5, x)
-        let x /= 2.5
-        call assert_equal(4.2, x)
-        call assert_fails('let x %= 0.5', 'E734')
-        call assert_fails('let x .= "f"', 'E734')
+      " Test for float
+      let x -= 1.5
+      call assert_equal(-0.5, x)
+      let x = 0.5
+      let x += 4.5
+      call assert_equal(5.0, x)
+      let x -= 1.5
+      call assert_equal(3.5, x)
+      let x *= 3.0
+      call assert_equal(10.5, x)
+      let x /= 2.5
+      call assert_equal(4.2, x)
+      call assert_fails('let x %= 0.5', 'E734')
+      call assert_fails('let x .= "f"', 'E734')
     endif
 
     " Test for environment variable
@@ -1407,6 +1674,31 @@ func Test_compound_assignment_operators()
     let @/ .= 's'
     call assert_equal('1s', @/)
     let @/ = ''
+endfunc
+
+func Test_unlet_env()
+    let $TESTVAR = 'yes'
+    call assert_equal('yes', $TESTVAR)
+    call assert_fails('lockvar $TESTVAR', 'E940')
+    call assert_fails('unlockvar $TESTVAR', 'E940')
+    call assert_equal('yes', $TESTVAR)
+    if 0
+        unlet $TESTVAR
+    endif
+    call assert_equal('yes', $TESTVAR)
+    unlet $TESTVAR
+    call assert_equal('', $TESTVAR)
+endfunc
+
+func Test_funccall_garbage_collect()
+    func Func(x, ...)
+        call add(a:x, a:000)
+    endfunc
+    call Func([], [])
+    " Must not crash cause by invalid freeing
+    call test_garbagecollect_now()
+    call assert_true(v:true)
+    delfunc Func
 endfunc
 
 func Test_function_defined_line()
@@ -1455,7 +1747,7 @@ func Test_function_defined_line()
     [CODE]
 
     call writefile(lines, 'Xtest.vim')
-    let res = system(v:progpath .. ' --clean -es -X -S Xtest.vim')
+    let res = system(GetVimCommandClean() .. ' -es -X -S Xtest.vim')
     call assert_equal(0, v:shell_error)
 
     let m = matchstr(res, 'function F1()[^[:print:]]*[[:print:]]*')
@@ -1479,7 +1771,27 @@ func Test_function_defined_line()
     call delete('Xtest.vim')
 endfunc
 
+func Test_for_over_string()
+  let res = ''
+  for c in 'aéc̀d'
+    let res ..= c .. '-'
+  endfor
+  call assert_equal('a-é-c̀-d-', res)
+
+  let res = ''
+  for c in ''
+    let res ..= c .. '-'
+  endfor
+  call assert_equal('', res)
+
+  let res = ''
+  for c in v:_null_string
+    let res ..= c .. '-'
+  endfor
+  call assert_equal('', res)
+endfunc
+
 "-------------------------------------------------------------------------------
 " Modelines								    {{{1
-" vim: ts=8 sw=4 tw=80 fdm=marker
+" vim: ts=8 sw=2 sts=2 expandtab tw=80 fdm=marker
 "-------------------------------------------------------------------------------

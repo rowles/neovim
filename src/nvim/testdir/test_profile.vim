@@ -1,8 +1,9 @@
 " Test Vim profiler
-if !has('profile')
-  finish
-endif
 
+source check.vim
+CheckFeature profile
+
+source shared.vim
 source screendump.vim
 
 func Test_profile_func()
@@ -16,6 +17,7 @@ func Test_profile_func()
       while l:count > 0
         let l:count = l:count - 1
       endwhile
+      sleep 1m
     endfunc
     func! Foo3()
     endfunc
@@ -36,7 +38,7 @@ func Test_profile_func()
   [CODE]
 
   call writefile(lines, 'Xprofile_func.vim')
-  call system(v:progpath
+  call system(GetVimCommand()
     \ . ' -es --clean'
     \ . ' -c "so Xprofile_func.vim"'
     \ . ' -c "qall!"')
@@ -51,7 +53,7 @@ func Test_profile_func()
   " - Unlike Foo3(), Foo2() should not be deleted since there is a check
   "   for v:profiling.
   " - Bar() is not reported since it does not match "profile func Foo*".
-  call assert_equal(30, len(lines))
+  call assert_equal(31, len(lines))
 
   call assert_equal('FUNCTION  Foo1()',                            lines[0])
   call assert_match('Defined:.*Xprofile_func.vim:3',               lines[1])
@@ -71,17 +73,18 @@ func Test_profile_func()
   call assert_match('^\s*101\s\+.*\swhile l:count > 0$',           lines[16])
   call assert_match('^\s*100\s\+.*\s  let l:count = l:count - 1$', lines[17])
   call assert_match('^\s*101\s\+.*\sendwhile$',                    lines[18])
-  call assert_equal('',                                            lines[19])
-  call assert_equal('FUNCTIONS SORTED ON TOTAL TIME',              lines[20])
-  call assert_equal('count  total (s)   self (s)  function',       lines[21])
-  call assert_match('^\s*1\s\+\d\+\.\d\+\s\+Foo2()$',              lines[22])
-  call assert_match('^\s*2\s\+\d\+\.\d\+\s\+Foo1()$',              lines[23])
-  call assert_equal('',                                            lines[24])
-  call assert_equal('FUNCTIONS SORTED ON SELF TIME',               lines[25])
-  call assert_equal('count  total (s)   self (s)  function',       lines[26])
-  call assert_match('^\s*1\s\+\d\+\.\d\+\s\+Foo2()$',              lines[27])
-  call assert_match('^\s*2\s\+\d\+\.\d\+\s\+Foo1()$',              lines[28])
-  call assert_equal('',                                            lines[29])
+  call assert_match('^\s*1\s\+.\+sleep 1m$',                       lines[19])
+  call assert_equal('',                                            lines[20])
+  call assert_equal('FUNCTIONS SORTED ON TOTAL TIME',              lines[21])
+  call assert_equal('count  total (s)   self (s)  function',       lines[22])
+  call assert_match('^\s*1\s\+\d\+\.\d\+\s\+Foo2()$',              lines[23])
+  call assert_match('^\s*2\s\+\d\+\.\d\+\s\+Foo1()$',              lines[24])
+  call assert_equal('',                                            lines[25])
+  call assert_equal('FUNCTIONS SORTED ON SELF TIME',               lines[26])
+  call assert_equal('count  total (s)   self (s)  function',       lines[27])
+  call assert_match('^\s*1\s\+\d\+\.\d\+\s\+Foo2()$',              lines[28])
+  call assert_match('^\s*2\s\+\d\+\.\d\+\s\+Foo1()$',              lines[29])
+  call assert_equal('',                                            lines[30])
 
   call delete('Xprofile_func.vim')
   call delete('Xprofile_func.log')
@@ -122,8 +125,8 @@ func Test_profile_func_with_ifelse()
   [CODE]
 
   call writefile(lines, 'Xprofile_func.vim')
-  call system(v:progpath
-    \ . ' -es -u NONE -U NONE -i NONE --noplugin'
+  call system(GetVimCommand()
+    \ . ' -es -i NONE --noplugin'
     \ . ' -c "profile start Xprofile_func.log"'
     \ . ' -c "profile func Foo*"'
     \ . ' -c "so Xprofile_func.vim"'
@@ -235,8 +238,8 @@ func Test_profile_func_with_trycatch()
   [CODE]
 
   call writefile(lines, 'Xprofile_func.vim')
-  call system(v:progpath
-    \ . ' -es -u NONE -U NONE -i NONE --noplugin'
+  call system(GetVimCommand()
+    \ . ' -es -i NONE --noplugin'
     \ . ' -c "profile start Xprofile_func.log"'
     \ . ' -c "profile func Foo*"'
     \ . ' -c "so Xprofile_func.vim"'
@@ -322,8 +325,8 @@ func Test_profile_file()
   [CODE]
 
   call writefile(lines, 'Xprofile_file.vim')
-  call system(v:progpath
-    \ . ' -es --clean'
+  call system(GetVimCommandClean()
+    \ . ' -es'
     \ . ' -c "profile start Xprofile_file.log"'
     \ . ' -c "profile file Xprofile_file.vim"'
     \ . ' -c "so Xprofile_file.vim"'
@@ -367,8 +370,8 @@ func Test_profile_file_with_cont()
     \ ]
 
   call writefile(lines, 'Xprofile_file.vim')
-  call system(v:progpath
-    \ . ' -es -u NONE -U NONE -i NONE --noplugin'
+  call system(GetVimCommandClean()
+    \ . ' -es'
     \ . ' -c "profile start Xprofile_file.log"'
     \ . ' -c "profile file Xprofile_file.vim"'
     \ . ' -c "so Xprofile_file.vim"'
@@ -425,7 +428,7 @@ func Test_profile_truncate_mbyte()
     \ ]
 
   call writefile(lines, 'Xprofile_file.vim')
-  call system(v:progpath
+  call system(GetVimCommandClean()
     \ . ' -es --cmd "set enc=utf-8"'
     \ . ' -c "profile start Xprofile_file.log"'
     \ . ' -c "profile file Xprofile_file.vim"'
@@ -472,7 +475,7 @@ func Test_profdel_func()
     call Foo3()
   [CODE]
   call writefile(lines, 'Xprofile_file.vim')
-  call system(v:progpath . ' -es --clean -c "so Xprofile_file.vim" -c q')
+  call system(GetVimCommandClean() . ' -es -c "so Xprofile_file.vim" -c q')
   call assert_equal(0, v:shell_error)
 
   let lines = readfile('Xprofile_file.log')
@@ -507,7 +510,7 @@ func Test_profdel_star()
     call Foo()
   [CODE]
   call writefile(lines, 'Xprofile_file.vim')
-  call system(v:progpath . ' -es --clean -c "so Xprofile_file.vim" -c q')
+  call system(GetVimCommandClean() . ' -es -c "so Xprofile_file.vim" -c q')
   call assert_equal(0, v:shell_error)
 
   let lines = readfile('Xprofile_file.log')

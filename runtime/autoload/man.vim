@@ -7,32 +7,17 @@ let s:loaded_man = 1
 
 let s:find_arg = '-w'
 let s:localfile_arg = v:true  " Always use -l if possible. #6683
-let s:section_arg = '-s'
 
-function! s:init_section_flag()
-  call system(['env', 'MANPAGER=cat', 'man', s:section_arg, '1', 'man'])
-  if v:shell_error
-    let s:section_arg = '-S'
-  endif
-endfunction
-
-function! s:init() abort
-  call s:init_section_flag()
-  " TODO(nhooyr): Does `man -l` on SunOS list searched directories?
+function! man#init() abort
   try
-    if !has('win32') && $OSTYPE !~? 'cygwin\|linux' && system('uname -s') =~? 'SunOS' && system('uname -r') =~# '^5'
-      let s:find_arg = '-l'
-    endif
     " Check for -l support.
     call s:get_page(s:get_path('', 'man'))
-  catch /E145:/
-    " Ignore the error in restricted mode
   catch /command error .*/
     let s:localfile_arg = v:false
   endtry
 endfunction
 
-function! man#open_page(count, count1, mods, ...) abort
+function! man#open_page(count, mods, ...) abort
   if a:0 > 2
     call s:error('too many arguments')
     return
@@ -52,13 +37,12 @@ function! man#open_page(count, count1, mods, ...) abort
     let ref = a:2.'('.a:1.')'
   endif
   try
-    let [sect, name] = man#extract_sect_and_name_ref(ref)
-    if a:count ==# a:count1
-      " v:count defaults to 0 which is a valid section, and v:count1 defaults to
-      " 1, also a valid section. If they are equal, count explicitly set.
+    let [sect, name] = s:extract_sect_and_name_ref(ref)
+    if a:count >= 0
       let sect = string(a:count)
     endif
-    let [sect, name, path] = s:verify_exists(sect, name)
+    let path = s:verify_exists(sect, name)
+    let [sect, name] = s:extract_sect_and_name_path(path)
   catch
     call s:error(v:exception)
     return
@@ -66,13 +50,14 @@ function! man#open_page(count, count1, mods, ...) abort
 
   let [l:buf, l:save_tfu] = [bufnr(), &tagfunc]
   try
-    set tagfunc=man#goto_tag
+    setlocal tagfunc=man#goto_tag
     let l:target = l:name . '(' . l:sect . ')'
     if a:mods !~# 'tab' && s:find_man()
       execute 'silent keepalt tag' l:target
     else
       execute 'silent keepalt' a:mods 'stag' l:target
     endif
+    call s:set_options(v:false)
   finally
     call setbufvar(l:buf, '&tagfunc', l:save_tfu)
   endtry
@@ -80,10 +65,12 @@ function! man#open_page(count, count1, mods, ...) abort
   let b:man_sect = sect
 endfunction
 
+" Called when a man:// buffer is opened.
 function! man#read_page(ref) abort
   try
-    let [sect, name] = man#extract_sect_and_name_ref(a:ref)
-    let [sect, name, path] = s:verify_exists(sect, name)
+    let [sect, name] = s:extract_sect_and_name_ref(a:ref)
+    let path = s:verify_exists(sect, name)
+    let [sect, name] = s:extract_sect_and_name_path(path)
     let page = s:get_page(path)
   catch
     call s:error(v:exception)
@@ -135,11 +122,18 @@ function! s:system(cmd, ...) abort
   return opts.stdout
 endfunction
 
+function! s:set_options(pager) abort
+  setlocal noswapfile buftype=nofile bufhidden=hide
+  setlocal nomodified readonly nomodifiable
+  let b:pager = a:pager
+  setlocal filetype=man
+endfunction
+
 function! s:get_page(path) abort
   " Disable hard-wrap by using a big $MANWIDTH (max 1000 on some systems #9065).
   " Soft-wrap: ftplugin/man.vim sets wrap/breakindent/….
   " Hard-wrap: driven by `man`.
-  let manwidth = !get(g:,'man_hardwrap', 1) ? 999 : (empty($MANWIDTH) ? winwidth(0) : $MANWIDTH)
+  let manwidth = !get(g:, 'man_hardwrap', 1) ? 999 : (empty($MANWIDTH) ? winwidth(0) : $MANWIDTH)
   " Force MANPAGER=cat to ensure Vim is not recursively invoked (by man-db).
   " http://comments.gmane.org/gmane.editors.vim.devel/29085
   " Set MAN_KEEP_FORMATTING so Debian man doesn't discard backspaces.
@@ -148,11 +142,7 @@ function! s:get_page(path) abort
 endfunction
 
 function! s:put_page(page) abort
-  setlocal modifiable
-  setlocal noreadonly
-  setlocal noswapfile
-  " git-ls-files(1) is all one keyword/tag-target
-  setlocal iskeyword+=(,)
+  setlocal modifiable noreadonly noswapfile
   silent keepjumps %delete _
   silent put =a:page
   while getline(1) =~# '^\s*$'
@@ -164,7 +154,7 @@ function! s:put_page(page) abort
   silent! keeppatterns keepjumps %s/\s\{199,}/\=repeat(' ', 10)/g
   1
   lua require("man").highlight_man_page()
-  setlocal filetype=man
+  call s:set_options(v:false)
 endfunction
 
 function! man#show_toc() abort
@@ -181,6 +171,12 @@ function! man#show_toc() abort
   while lnum && lnum < last_line
     let text = getline(lnum)
     if text =~# '^\%( \{3\}\)\=\S.*$'
+      " if text is a section title
+      call add(toc, {'bufnr': bufnr('%'), 'lnum': lnum, 'text': text})
+    elseif text =~# '^\s\+\%(+\|-\)\S\+'
+      " if text is a flag title. we strip whitespaces and prepend two
+      " spaces to have a consistent format in the loclist.
+      let text = '  ' .. substitute(text, '^\s*\(.\{-}\)\s*$', '\1', '')
       call add(toc, {'bufnr': bufnr('%'), 'lnum': lnum, 'text': text})
     endif
     let lnum = nextnonblank(lnum + 1)
@@ -194,7 +190,7 @@ endfunction
 
 " attempt to extract the name and sect out of 'name(sect)'
 " otherwise just return the largest string of valid characters in ref
-function! man#extract_sect_and_name_ref(ref) abort
+function! s:extract_sect_and_name_ref(ref) abort
   if a:ref[0] ==# '-' " try ':Man -pandoc' with this disabled.
     throw 'manpage name cannot start with ''-'''
   endif
@@ -204,47 +200,151 @@ function! man#extract_sect_and_name_ref(ref) abort
     if empty(name)
       throw 'manpage reference cannot contain only parentheses'
     endif
-    return [get(b:, 'man_default_sects', ''), name]
+    return ['', s:spaces_to_underscores(name)]
   endif
   let left = split(ref, '(')
   " see ':Man 3X curses' on why tolower.
   " TODO(nhooyr) Not sure if this is portable across OSs
   " but I have not seen a single uppercase section.
-  return [tolower(split(left[1], ')')[0]), left[0]]
+  return [tolower(split(left[1], ')')[0]), s:spaces_to_underscores(left[0])]
+endfunction
+
+" replace spaces in a man page name with underscores
+" intended for PostgreSQL, which has man pages like 'CREATE_TABLE(7)';
+" while editing SQL source code, it's nice to visually select 'CREATE TABLE'
+" and hit 'K', which requires this transformation
+function! s:spaces_to_underscores(str)
+  return substitute(a:str, ' ', '_', 'g')
 endfunction
 
 function! s:get_path(sect, name) abort
   " Some man implementations (OpenBSD) return all available paths from the
-  " search command, so we get() the first one. #8341
+  " search command. Previously, this function would simply select the first one.
+  "
+  " However, some searches will report matches that are incorrect:
+  " man -w strlen may return string.3 followed by strlen.3, and therefore
+  " selecting the first would get us the wrong page. Thus, we must find the
+  " first matching one.
+  "
+  " There's yet another special case here. Consider the following:
+  " If you run man -w strlen and string.3 comes up first, this is a problem. We
+  " should search for a matching named one in the results list.
+  " However, if you search for man -w clock_gettime, you will *only* get
+  " clock_getres.2, which is the right page. Searching the resuls for
+  " clock_gettime will no longer work. In this case, we should just use the
+  " first one that was found in the correct section.
+  "
+  " Finally, we can avoid relying on -S or -s here since they are very
+  " inconsistently supported. Instead, call -w with a section and a name.
   if empty(a:sect)
-    return substitute(get(split(s:system(['man', s:find_arg, a:name])), 0, ''), '\n\+$', '', '')
+    let results = split(s:system(['man', s:find_arg, a:name]))
+  else
+    let results = split(s:system(['man', s:find_arg, a:sect, a:name]))
   endif
-  " '-s' flag handles:
-  "   - tokens like 'printf(echo)'
-  "   - sections starting with '-'
-  "   - 3pcap section (found on macOS)
-  "   - commas between sections (for section priority)
-  return substitute(get(split(s:system(['man', s:find_arg, s:section_arg, a:sect, a:name])), 0, ''), '\n\+$', '', '')
+
+  if empty(results)
+    return ''
+  endif
+
+  " find any that match the specified name
+  let namematches = filter(copy(results), 'fnamemodify(v:val, ":t") =~ a:name')
+  let sectmatches = []
+
+  if !empty(namematches) && !empty(a:sect)
+    let sectmatches = filter(copy(namematches), 'fnamemodify(v:val, ":e") == a:sect')
+  endif
+
+  return substitute(get(sectmatches, 0, get(namematches, 0, results[0])), '\n\+$', '', '')
 endfunction
 
+" s:verify_exists attempts to find the path to a manpage
+" based on the passed section and name.
+"
+" 1. If the passed section is empty, b:man_default_sects is used.
+" 2. If manpage could not be found with the given sect and name,
+"    then another attempt is made with b:man_default_sects.
+" 3. If it still could not be found, then we try again without a section.
+" 4. If still not found but $MANSECT is set, then we try again with $MANSECT
+"    unset.
+"
+" This function is careful to avoid duplicating a search if a previous
+" step has already done it. i.e if we use b:man_default_sects in step 1,
+" then we don't do it again in step 2.
 function! s:verify_exists(sect, name) abort
-  try
-    let path = s:get_path(a:sect, a:name)
-  catch /^command error (/
+  let sect = a:sect
+
+  if empty(sect)
+    " no section specified, so search with b:man_default_sects
+    if exists('b:man_default_sects')
+      let sects = split(b:man_default_sects, ',')
+      for sec in sects
+        try
+          let res = s:get_path(sec, a:name)
+          if !empty(res)
+            return res
+          endif
+        catch /^command error (/
+        endtry
+      endfor
+    endif
+  else
+    " try with specified section
     try
-      let path = s:get_path(get(b:, 'man_default_sects', ''), a:name)
+      let res = s:get_path(sect, a:name)
+      if !empty(res)
+        return res
+      endif
     catch /^command error (/
-      let path = s:get_path('', a:name)
     endtry
+
+    " try again with b:man_default_sects
+    if exists('b:man_default_sects')
+      let sects = split(b:man_default_sects, ',')
+      for sec in sects
+        try
+          let res = s:get_path(sec, a:name)
+          if !empty(res)
+            return res
+          endif
+        catch /^command error (/
+        endtry
+      endfor
+    endif
+  endif
+
+  " if none of the above worked, we will try with no section
+  try
+    let res = s:get_path('', a:name)
+    if !empty(res)
+      return res
+    endif
+  catch /^command error (/
   endtry
-  " Extract the section from the path, because sometimes the actual section is
-  " more specific than what we provided to `man` (try `:Man 3 App::CLI`).
-  " Also on linux, name seems to be case-insensitive. So for `:Man PRIntf`, we
-  " still want the name of the buffer to be 'printf'.
-  return s:extract_sect_and_name_path(path) + [path]
+
+  " if that still didn't work, we will check for $MANSECT and try again with it
+  " unset
+  if !empty($MANSECT)
+    try
+      let MANSECT = $MANSECT
+      call setenv('MANSECT', v:null)
+      let res = s:get_path('', a:name)
+      if !empty(res)
+        return res
+      endif
+    catch /^command error (/
+    finally
+      call setenv('MANSECT', MANSECT)
+    endtry
+  endif
+
+  " finally, if that didn't work, there is no hope
+  throw 'no manual entry for ' . a:name
 endfunction
 
-" extracts the name and sect out of 'path/name.sect'
+" Extracts the name/section from the 'path/name.sect', because sometimes the actual section is
+" more specific than what we provided to `man` (try `:Man 3 App::CLI`).
+" Also on linux, name seems to be case-insensitive. So for `:Man PRIntf`, we
+" still want the name of the buffer to be 'printf'.
 function! s:extract_sect_and_name_path(path) abort
   let tail = fnamemodify(a:path, ':t')
   if a:path =~# '\.\%([glx]z\|bz2\|lzma\|Z\)$' " valid extensions
@@ -275,7 +375,7 @@ function! s:error(msg) abort
   echohl None
 endfunction
 
-" see man#extract_sect_and_name_ref on why tolower(sect)
+" see s:extract_sect_and_name_ref on why tolower(sect)
 function! man#complete(arg_lead, cmd_line, cursor_pos) abort
   let args = split(a:cmd_line)
   let cmd_offset = index(args, 'Man')
@@ -328,18 +428,35 @@ function! man#complete(arg_lead, cmd_line, cursor_pos) abort
   return s:complete(sect, sect, name)
 endfunction
 
-function! s:get_paths(sect, name) abort
+function! s:get_paths(sect, name, do_fallback) abort
+  " callers must try-catch this, as some `man` implementations don't support `s:find_arg`
   try
     let mandirs = join(split(s:system(['man', s:find_arg]), ':\|\n'), ',')
+    let paths = globpath(mandirs, 'man?/'.a:name.'*.'.a:sect.'*', 0, 1)
+    try
+      " Prioritize the result from verify_exists as it obeys b:man_default_sects.
+      let first = s:verify_exists(a:sect, a:name)
+      let paths = filter(paths, 'v:val !=# first')
+      let paths = [first] + paths
+    catch
+    endtry
+    return paths
   catch
-    call s:error(v:exception)
-    return
+    if !a:do_fallback
+      throw v:exception
+    endif
+
+    " Fallback to a single path, with the page we're trying to find.
+    try
+      return [s:verify_exists(a:sect, a:name)]
+    catch
+      return []
+    endtry
   endtry
-  return globpath(mandirs,'man?/'.a:name.'*.'.a:sect.'*', 0, 1)
 endfunction
 
 function! s:complete(sect, psect, name) abort
-  let pages = s:get_paths(a:sect, a:name)
+  let pages = s:get_paths(a:sect, a:name, v:false)
   " We remove duplicates in case the same manpage in different languages was found.
   return uniq(sort(map(pages, 's:format_candidate(v:val, a:psect)'), 'i'))
 endfunction
@@ -358,11 +475,8 @@ function! s:format_candidate(path, psect) abort
   endif
 endfunction
 
+" Called when Nvim is invoked as $MANPAGER.
 function! man#init_pager() abort
-  " https://github.com/neovim/neovim/issues/6828
-  let og_modifiable = &modifiable
-  setlocal modifiable
-
   if getline(1) =~# '^\s*$'
     silent keepjumps 1delete _
   else
@@ -373,7 +487,7 @@ function! man#init_pager() abort
   " know the correct casing, cf. `man glDrawArraysInstanced`).
   let ref = substitute(matchstr(getline(1), '^[^)]\+)'), ' ', '_', 'g')
   try
-    let b:man_sect = man#extract_sect_and_name_ref(ref)[0]
+    let b:man_sect = s:extract_sect_and_name_ref(ref)[0]
   catch
     let b:man_sect = ''
   endtry
@@ -381,30 +495,35 @@ function! man#init_pager() abort
     execute 'silent file man://'.tolower(fnameescape(ref))
   endif
 
-  let &l:modifiable = og_modifiable
+  call s:set_options(v:true)
 endfunction
 
 function! man#goto_tag(pattern, flags, info) abort
-  let [l:sect, l:name] = man#extract_sect_and_name_ref(a:pattern)
+  let [l:sect, l:name] = s:extract_sect_and_name_ref(a:pattern)
 
-  let l:paths = s:get_paths(l:sect, l:name)
+  let l:paths = s:get_paths(l:sect, l:name, v:true)
   let l:structured = []
 
   for l:path in l:paths
-    let l:n = s:extract_sect_and_name_path(l:path)[1]
-    let l:structured += [{ 'name': l:n, 'path': l:path }]
+    let [l:sect, l:name] = s:extract_sect_and_name_path(l:path)
+    let l:structured += [{
+          \ 'name': l:name,
+          \ 'title': l:name . '(' . l:sect . ')'
+          \ }]
   endfor
 
-  " sort by relevance - exact matches first, then the previous order
-  call sort(l:structured, { a, b -> a.name ==? l:name ? -1 : b.name ==? l:name ? 1 : 0 })
+  if &cscopetag
+    " return only a single entry so we work well with :cstag (#11675)
+    let l:structured = l:structured[:0]
+  endif
 
   return map(l:structured, {
   \  _, entry -> {
   \      'name': entry.name,
-  \      'filename': 'man://' . entry.path,
+  \      'filename': 'man://' . entry.title,
   \      'cmd': '1'
   \    }
   \  })
 endfunction
 
-call s:init()
+call man#init()

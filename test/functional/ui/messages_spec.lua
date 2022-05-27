@@ -12,6 +12,7 @@ local nvim_prog = helpers.nvim_prog
 local iswin = helpers.iswin
 local exc_exec = helpers.exc_exec
 local exec_lua = helpers.exec_lua
+local poke_eventloop = helpers.poke_eventloop
 
 describe('ui/ext_messages', function()
   local screen
@@ -29,6 +30,7 @@ describe('ui/ext_messages', function()
       [6] = {bold = true, reverse = true},
       [7] = {background = Screen.colors.Yellow},
       [8] = {foreground = Screen.colors.Red},
+      [9] = {special = Screen.colors.Red, undercurl = true},
     })
   end)
   after_each(function()
@@ -302,13 +304,25 @@ describe('ui/ext_messages', function()
       {1:~                        }|
       {1:~                        }|
       {1:~                        }|
-    ]], messages={
+    ]], msg_history={
       {kind="echoerr", content={{"raa", 2}}},
       {kind="echoerr", content={{"bork", 2}}},
       {kind="echoerr", content={{"fail", 2}}},
       {kind="echoerr", content={{"extrafail", 2}}},
       {kind="echoerr", content={{"problem", 2}}}
-    }}
+    }, messages={{
+      content = {{ "Press ENTER or type command to continue", 4 }},
+      kind = "return_prompt"
+    }}}
+
+    feed '<cr>'
+    screen:expect{grid=[[
+      ^                         |
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+    ]]}
   end)
 
   it('shortmess-=S', function()
@@ -323,7 +337,7 @@ describe('ui/ext_messages', function()
       {1:~                        }|
       {1:~                        }|
     ]], messages={
-      {content = {{"/line      [1/2] W"}}, kind = "search_count"}
+      {content = {{"/line      W [1/2]"}}, kind = "search_count"}
     }}
 
     feed('n')
@@ -453,9 +467,14 @@ describe('ui/ext_messages', function()
       alphpabe^t                |
       {1:~                        }|
       {1:~                        }|
-    ]], messages={
-      {kind="echomsg", content={{"stuff"}}},
-    }}
+    ]], msg_history={{
+      content = {{ "stuff" }},
+      kind = "echomsg",
+    }}, showmode={{ "-- INSERT --", 3 }},
+      messages={{
+        content = {{ "Press ENTER or type command to continue", 4}},
+        kind = "return_prompt"
+    }}}
   end)
 
   it('&showmode with macro-recording message', function()
@@ -681,12 +700,15 @@ describe('ui/ext_messages', function()
       {1:~                        }|
       {1:~                        }|
       {1:~                        }|
-    ]], messages={
+    ]], msg_history={
       {kind="echomsg", content={{"howdy"}}},
       {kind="", content={{"Type  :qa  and press <Enter> to exit Nvim"}}},
       {kind="echoerr", content={{"bork", 2}}},
       {kind="emsg", content={{"E117: Unknown function: nosuchfunction", 2}}}
-    }}
+    }, messages={{
+      content = {{ "Press ENTER or type command to continue", 4}},
+      kind = "return_prompt"
+    }}}
   end)
 
   it('implies ext_cmdline and ignores cmdheight', function()
@@ -747,8 +769,13 @@ describe('ui/ext_messages', function()
       {1:~                        }|
       {1:~                        }|
     ]], messages={{
-        content = {{'E5108: Error executing lua [string ":lua"]:1: such\nmultiline\nerror', 2}},
-        kind = "lua_error"
+        content = {{[[E5108: Error executing lua [string ":lua"]:1: such
+multiline
+error
+stack traceback:
+	[C]: in function 'error'
+	[string ":lua"]:1: in main chunk]], 2}},
+        kind = "lua_error",
      }}}
   end)
 
@@ -795,6 +822,45 @@ describe('ui/ext_messages', function()
       pos = 9,
     }}}
   end)
+
+  it('hides prompt_for_number messages', function()
+    command('set spell')
+    feed('ihelllo<esc>')
+
+    feed('z=')
+    screen:expect{grid=[[
+      {9:helllo}                   |
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+      {1:^~                        }|
+    ]], messages={
+      {content = { { 'Change "helllo" to:\n 1 "Hello"\n 2 "Hallo"\n 3 "Hullo"\nType number and <Enter> or click with the mouse (q or empty cancels): ' } }, kind = ""}
+    }}
+
+    feed('1')
+    screen:expect{grid=[[
+      {9:helllo}                   |
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+      {1:^~                        }|
+    ]], messages={
+      {content = { { 'Change "helllo" to:\n 1 "Hello"\n 2 "Hallo"\n 3 "Hullo"\nType number and <Enter> or click with the mouse (q or empty cancels): ' } }, kind = ""},
+      { content = { { "1" } }, kind = "" }
+    }}
+
+    feed('<cr>')
+    screen:expect{grid=[[
+      ^Hello                    |
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+      {1:~                        }|
+    ]]}
+
+  end)
+
 end)
 
 describe('ui/builtin messages', function()
@@ -811,6 +877,8 @@ describe('ui/builtin messages', function()
       [5] = {foreground = Screen.colors.Blue1},
       [6] = {bold = true, foreground = Screen.colors.Magenta},
       [7] = {background = Screen.colors.Grey20},
+      [8] = {reverse = true},
+      [9] = {background = Screen.colors.LightRed}
     })
   end)
 
@@ -938,6 +1006,115 @@ vimComment     xxx match /\s"[^\-:.%#=*].*$/ms=s+1,lc=1  excludenl contains=@vim
       {7:                                          0,0-1 100%        }|
     ]]}
   end)
+
+  it('supports echo with CRLF line separators', function()
+    feed(':echo "line 1\\r\\nline 2"<cr>')
+    screen:expect{grid=[[
+                                                                  |
+      {1:~                                                           }|
+      {1:~                                                           }|
+      {3:                                                            }|
+      line 1                                                      |
+      line 2                                                      |
+      {4:Press ENTER or type command to continue}^                     |
+    ]]}
+
+    feed('<cr>:echo "abc\\rz"<cr>')
+    screen:expect{grid=[[
+      ^                                                            |
+      {1:~                                                           }|
+      {1:~                                                           }|
+      {1:~                                                           }|
+      {1:~                                                           }|
+      {1:~                                                           }|
+      zbc                                                         |
+    ]]}
+  end)
+
+  it('redraws NOT_VALID correctly after message', function()
+    -- edge case: only one window was set NOT_VALID. Original report
+    -- used :make, but fake it using one command to set the current
+    -- window NOT_VALID and another to show a long message.
+    command("set more")
+    feed(':new<cr><c-w><c-w>')
+    screen:expect{grid=[[
+                                                                  |
+      {1:~                                                           }|
+      {8:[No Name]                                                   }|
+      ^                                                            |
+      {1:~                                                           }|
+      {3:[No Name]                                                   }|
+      :new                                                        |
+    ]]}
+
+    feed(':set colorcolumn=10 | digraphs<cr>')
+    screen:expect{grid=[[
+      :set colorcolumn=10 | digraphs                              |
+      NU {5:^@}  10    SH {5:^A}   1    SX {5:^B}   2    EX {5:^C}   3            |
+      ET {5:^D}   4    EQ {5:^E}   5    AK {5:^F}   6    BL {5:^G}   7            |
+      BS {5:^H}   8    HT {5:^I}   9    LF {5:^@}  10    VT {5:^K}  11            |
+      FF {5:^L}  12    CR {5:^M}  13    SO {5:^N}  14    SI {5:^O}  15            |
+      DL {5:^P}  16    D1 {5:^Q}  17    D2 {5:^R}  18    D3 {5:^S}  19            |
+      {4:-- More --}^                                                  |
+    ]]}
+
+    feed('q')
+    screen:expect{grid=[[
+                                                                  |
+      {1:~                                                           }|
+      {8:[No Name]                                                   }|
+      ^         {9: }                                                  |
+      {1:~                                                           }|
+      {3:[No Name]                                                   }|
+                                                                  |
+    ]]}
+
+    -- edge case: just covers statusline
+    feed(':set colorcolumn=5 | lua error("x\\n\\nx")<cr>')
+    screen:expect{grid=[[
+      {2:E5108: Error executing lua [string ":lua"]:1: x}             |
+                                                                  |
+      {2:x}                                                           |
+      {2:stack traceback:}                                            |
+      {2:        [C]: in function 'error'}                            |
+      {2:        [string ":lua"]:1: in main chunk}                    |
+      {4:Press ENTER or type command to continue}^                     |
+    ]]}
+
+    feed('<cr>')
+    screen:expect{grid=[[
+                                                                  |
+      {1:~                                                           }|
+      {8:[No Name]                                                   }|
+      ^    {9: }                                                       |
+      {1:~                                                           }|
+      {3:[No Name]                                                   }|
+                                                                  |
+    ]]}
+
+    -- edge case: just covers lowest window line
+    feed(':set colorcolumn=5 | lua error("x\\n\\n\\nx")<cr>')
+    screen:expect{grid=[[
+      {2:E5108: Error executing lua [string ":lua"]:1: x}             |
+                                                                  |
+                                                                  |
+      {2:x}                                                           |
+      {2:stack traceback:}                                            |
+      {2:        [C]: in function 'error'}                            |
+      {4:-- More --}^                                                  |
+    ]]}
+
+    feed('<cr>')
+    screen:expect{grid=[[
+                                                                  |
+                                                                  |
+      {2:x}                                                           |
+      {2:stack traceback:}                                            |
+      {2:        [C]: in function 'error'}                            |
+      {2:        [string ":lua"]:1: in main chunk}                    |
+      {4:Press ENTER or type command to continue}^                     |
+    ]]}
+  end)
 end)
 
 describe('ui/ext_messages', function()
@@ -953,6 +1130,8 @@ describe('ui/ext_messages', function()
       [3] = {bold = true},
       [4] = {bold = true, foreground = Screen.colors.SeaGreen4},
       [5] = {foreground = Screen.colors.Blue1},
+      [6] = {reverse = true},
+      [7] = {bold = true, reverse = true},
     })
   end)
 
@@ -1044,6 +1223,107 @@ describe('ui/ext_messages', function()
       {content = { { "Press ENTER or type command to continue", 4 } }, kind = "return_prompt" }
     }}
   end)
+
+  it('supports global statusline', function()
+    feed(":set laststatus=3<cr>")
+    feed(":sp<cr>")
+    feed(":set cmdheight<cr>")
+    screen:expect({grid=[[
+      ^                                                                                |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      ────────────────────────────────────────────────────────────────────────────────|
+                                                                                      |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {7:[No Name]                                                                       }|
+    ]], messages={
+      {content = { { "  cmdheight=0" } }, kind = "" }
+    }})
+
+    feed("<c-w>+")
+    feed(":set laststatus<cr>")
+    screen:expect({grid=[[
+      ^                                                                                |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      ────────────────────────────────────────────────────────────────────────────────|
+                                                                                      |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {7:[No Name]                                                                       }|
+    ]], messages={
+      {content = { { "  laststatus=3" } }, kind = "" }
+    }})
+
+    feed(":set mouse=a<cr>")
+    meths.input_mouse('left', 'press', '', 0, 12, 10)
+    poke_eventloop()
+    meths.input_mouse('left', 'drag', '', 0, 12, 10)
+    meths.input_mouse('left', 'drag', '', 0, 11, 10)
+    feed("<c-l>")
+    feed(":set cmdheight<cr>")
+    screen:expect({grid=[[
+      ^                                                                                |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      ────────────────────────────────────────────────────────────────────────────────|
+                                                                                      |
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {1:~                                                                               }|
+      {7:[No Name]                                                                       }|
+    ]], messages={
+      {content = { { "  cmdheight=0" } }, kind = "" }
+    }})
+  end)
 end)
 
 describe('ui/msg_puts_printf', function()
@@ -1068,7 +1348,7 @@ describe('ui/msg_puts_printf', function()
         pending('Locale ja_JP.UTF-8 not supported', function() end)
         return
       elseif helpers.isCI() then
-        -- Fails non--Windows CI. Message catalog direcotry issue?
+        -- Fails non--Windows CI. Message catalog directory issue?
         pending('fails on unix CI', function() end)
         return
       end
@@ -1207,14 +1487,14 @@ aliquip ex ea commodo consequat.]])
     ]]}
     feed('d')
     screen:expect{grid=[[
+      {2:mpor}                               |
       {2:incididunt ut labore et dolore magn}|
       {2:a aliqua.}                          |
       {2:Ut enim ad minim veniam, quis nostr}|
       {2:ud xercitation}                     |
       {2:ullamco laboris nisi ut}            |
       {2:aliquip ex ea commodo consequat.}   |
-      {4:Press ENTER or type command to cont}|
-      {4:inue}^                               |
+      {4:-- More --}^                         |
     ]]}
     feed('u')
     screen:expect{grid=[[
@@ -1307,14 +1587,14 @@ aliquip ex ea commodo consequat.]])
     ]]}
     feed('d')
     screen:expect{grid=[[
+      {3:mpor}{5:                               }|
       {3:incididunt ut labore et dolore magn}|
       {3:a aliqua.}{5:                          }|
       {3:Ut enim ad minim veniam, quis nostr}|
       {3:ud xercitation}{5:                     }|
       {3:ullamco laboris nisi ut}{5:            }|
       {3:aliquip ex ea commodo consequat.}{5:   }|
-      {6:Press ENTER or type command to cont}|
-      {6:inue}{5:^                               }|
+      {6:-- More --}{5:^                         }|
     ]]}
     feed('u')
     screen:expect{grid=[[
@@ -1514,6 +1794,7 @@ aliquip ex ea commodo consequat.]])
     -- wrapped at the new screen size.
     feed('<cr>')
     screen:expect{grid=[[
+      {2:":lua"]:1: Lorem ipsum dolor s}|
       {2:et, consectetur}               |
       {2:adipisicing elit, sed do eiusm}|
       {2:mpore}                         |
@@ -1524,8 +1805,7 @@ aliquip ex ea commodo consequat.]])
       {2:ullamco laboris nisi ut}       |
       {2:aliquip ex ea commodo consequa}|
       {2:t.}                            |
-      {4:Press ENTER or type command to}|
-      {4: continue}^                     |
+      {4:-- More --}^                    |
     ]]}
 
     feed('q')
